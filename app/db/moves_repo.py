@@ -254,4 +254,38 @@ def reset_for_reinvoice(move_id: int) -> None:
         )
         con.commit()
 
+def list_moves_active(limit: int = 30):
+    ensure_schema()
+    with get_conn() as con:
+        rows = con.execute(
+            """
+            SELECT m.*, fp.name AS from_point_name, tp.name AS to_point_name
+            FROM moves m
+            LEFT JOIN points fp ON fp.id = m.from_point_id
+            LEFT JOIN points tp ON tp.id = m.to_point_id
+            WHERE m.status NOT IN ('done', 'canceled')
+            ORDER BY m.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+def list_moves_closed(limit: int = 30):
+    ensure_schema()
+    with get_conn() as con:
+        rows = con.execute(
+            """
+            SELECT m.*, fp.name AS from_point_name, tp.name AS to_point_name
+            FROM moves m
+            LEFT JOIN points fp ON fp.id = m.from_point_id
+            LEFT JOIN points tp ON tp.id = m.to_point_id
+            WHERE m.status IN ('done', 'canceled')
+            ORDER BY m.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
 
