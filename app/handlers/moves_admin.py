@@ -1,0 +1,146 @@
+from aiogram import Router, F
+from aiogram.types import CallbackQuery
+
+from ..db import moves_repo as mv_repo
+from ..db import auth_repo
+from ..keyboards.moves import admin_moves_list_kb, admin_move_actions_kb
+from ..utils.text import move_text
+
+router = Router()
+
+
+def _uniq(ids: list[int]) -> list[int]:
+    seen = set()
+    out = []
+    for x in ids:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def _participants_ids(m: dict) -> list[int]:
+    """
+    Учасники = всі люди прив’язані до ТТ-відправника + ТТ-отримувача
+    """
+    from_pid = m.get("from_point_id")
+    to_pid = m.get("to_point_id")
+
+    ids: list[int] = []
+    if from_pid:
+        ids += [u["telegram_id"] for u in auth_repo.get_point_users(int(from_pid)) if u.get("telegram_id")]
+    if to_pid:
+        ids += [u["telegram_id"] for u in auth_repo.get_point_users(int(to_pid)) if u.get("telegram_id")]
+
+    return _uniq(ids)
+
+
+@router.callback_query(F.data == "mva:list")
+async def mva_list(cb: CallbackQuery):
+    items = mv_repo.list_moves(30)
+    if not items:
+        await cb.message.edit_text("Поки переміщень нема.")
+        await cb.answer()
+        return
+
+    await cb.message.edit_text("🔎 Обери переміщення:", reply_markup=admin_moves_list_kb(items))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("mva:view_"))
+async def mva_view(cb: CallbackQuery):
+    move_id = int(cb.data.split("_")[-1])
+    m = mv_repo.get_move(move_id)
+    if not m:
+        await cb.answer("Не знайдено.", show_alert=True)
+        return
+
+    # короткий прев’ю + кнопки дій
+    await cb.message.edit_text(
+        "📦 <b>Переміщення обране</b>\n\n" + move_text(m),
+        reply_markup=admin_move_actions_kb(move_id),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("mva:docs_"))
+async def mva_docs(cb: CallbackQuery):
+    move_id = int(cb.data.split("_")[-1])
+    m = mv_repo.get_move(move_id)
+    if not m:
+        await cb.answer("Не знайдено.", show_alert=True)
+        return
+
+    # 1) Основна накладна
+    caption_main = f"📄 <b>Накладна (основна)</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
+    if m.get("photo_file_id"):
+        try:
+            await cb.bot.send_photo(cb.from_user.id, photo=m["photo_file_id"], caption=caption_main)
+        except Exception:
+            await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Не зміг надіслати фото.")
+    else:
+        await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Фото накладної відсутнє.")
+
+    # 2) Накладна/фото коригування (якщо було)
+    if m.get("correction_status") and m.get("correction_status") != "none":
+        caption_corr = (
+            f"⚠️ <b>Коригування</b>\n🆔 ID: <b>{move_id}</b>\n"
+            f"Статус: <b>{m.get('correction_status')}</b>\n"
+        )
+        if (m.get("correction_note") or "").strip():
+            caption_corr += f"Коментар: {m.get('correction_note')}\n"
+
+        if m.get("correction_photo_file_id"):
+            try:
+                await cb.bot.send_photo(cb.from_user.id, photo=m["correction_photo_file_id"], caption=caption_corr)
+            except Exception:
+                await cb.bot.send_message(cb.from_user.id, caption_corr + "\n⚠️ Не зміг надіслати фото коригування.")
+        else:
+            await cb.bot.send_message(cb.from_user.id, caption_corr + "\n⚠️ Фото коригування відсутнє.")
+
+    await cb.answer("📄 Відправив накладні в чат", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("mva:close_"))
+async def mva_close(cb: CallbackQuery):
+    move_id = int(cb.data.split("_")[-1])
+    m = mv_repo.get_move(move_id)
+    if not m:
+        await cb.answer("Не знайдено.", show_alert=True)
+        return
+
+    # Закриваємо в БД
+    mv_repo.set_status(move_id, "done")
+    m = mv_repo.get_move(move_id) or m
+
+    # Текст учасникам
+    msg = (
+        "✅ <b>Переміщення закрито оператором</b>\n"
+        f"🆔 ID: <b>{move_id}</b>\n\n"
+        f"📤 Відправник: <b>{m.get('from_point_name') or '—'}</b>\n"
+        f"📥 Отримувач: <b>{m.get('to_point_name') or '—'}</b>\n"
+    )
+
+    # Сповіщаємо всіх учасників (обидві ТТ)
+    participants = _participants_ids(m)
+    delivered = 0
+    for uid in participants:
+        try:
+            await cb.bot.send_message(uid, msg)
+            delivered += 1
+        except Exception:
+            pass
+
+    # Оператору теж (якщо є)
+    op_id = m.get("operator_id") or m.get("created_by")
+    if op_id:
+        try:
+            await cb.bot.send_message(op_id, msg + f"\n📨 Повідомлень доставлено учасникам: <b>{delivered}</b>")
+        except Exception:
+            pass
+
+    await cb.message.edit_text(
+        f"✅ Закрито.\n📨 Учасникам доставлено: <b>{delivered}</b>\n\n" + move_text(m),
+        reply_markup=admin_move_actions_kb(move_id),
+    )
+    await cb.answer("Closed ✅", show_alert=True)
