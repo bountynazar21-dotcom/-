@@ -3,7 +3,11 @@ from aiogram.types import CallbackQuery
 
 from ..db import moves_repo as mv_repo
 from ..db import auth_repo
-from ..keyboards.moves import admin_moves_list_kb, admin_move_actions_kb
+from ..keyboards.moves import (
+    admin_moves_tabs_kb,
+    admin_moves_list_kb,
+    admin_move_actions_kb,
+)
 from ..utils.text import move_text
 
 router = Router()
@@ -11,7 +15,7 @@ router = Router()
 
 def _uniq(ids: list[int]) -> list[int]:
     seen = set()
-    out = []
+    out: list[int] = []
     for x in ids:
         if x not in seen:
             seen.add(x)
@@ -37,13 +41,37 @@ def _participants_ids(m: dict) -> list[int]:
 
 @router.callback_query(F.data == "mva:list")
 async def mva_list(cb: CallbackQuery):
-    items = mv_repo.list_moves(30)
+    # за замовчуванням відкриваємо АКТИВНІ
+    await mva_active(cb)
+
+
+@router.callback_query(F.data == "mva:active")
+async def mva_active(cb: CallbackQuery):
+    items = mv_repo.list_moves_active(50)
     if not items:
-        await cb.message.edit_text("Поки переміщень нема.")
+        await cb.message.edit_text("🟢 Активних переміщень нема.", reply_markup=admin_moves_tabs_kb(True))
         await cb.answer()
         return
 
-    await cb.message.edit_text("🔎 Обери переміщення:", reply_markup=admin_moves_list_kb(items))
+    await cb.message.edit_text(
+        "🟢 <b>Активні переміщення:</b>",
+        reply_markup=admin_moves_list_kb(items, "mva:active"),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "mva:closed")
+async def mva_closed(cb: CallbackQuery):
+    items = mv_repo.list_moves_closed(30)
+    if not items:
+        await cb.message.edit_text("✅ Завершених переміщень нема.", reply_markup=admin_moves_tabs_kb(False))
+        await cb.answer()
+        return
+
+    await cb.message.edit_text(
+        "✅ <b>Завершені переміщення (останні):</b>",
+        reply_markup=admin_moves_list_kb(items, "mva:closed"),
+    )
     await cb.answer()
 
 
@@ -55,10 +83,12 @@ async def mva_view(cb: CallbackQuery):
         await cb.answer("Не знайдено.", show_alert=True)
         return
 
-    # короткий прев’ю + кнопки дій
+    # визначимо, звідки прийшли (active/closed), щоб "назад" працював коректно
+    back_cb = "mva:active" if (m.get("status") not in ("done", "canceled")) else "mva:closed"
+
     await cb.message.edit_text(
         "📦 <b>Переміщення обране</b>\n\n" + move_text(m),
-        reply_markup=admin_move_actions_kb(move_id),
+        reply_markup=admin_move_actions_kb(move_id, back_cb=back_cb),
     )
     await cb.answer()
 
@@ -81,8 +111,8 @@ async def mva_docs(cb: CallbackQuery):
     else:
         await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Фото накладної відсутнє.")
 
-    # 2) Накладна/фото коригування (якщо було)
-    if m.get("correction_status") and m.get("correction_status") != "none":
+    # 2) Коригування (якщо було)
+    if (m.get("correction_status") or "none") != "none":
         caption_corr = (
             f"⚠️ <b>Коригування</b>\n🆔 ID: <b>{move_id}</b>\n"
             f"Статус: <b>{m.get('correction_status')}</b>\n"
@@ -98,7 +128,7 @@ async def mva_docs(cb: CallbackQuery):
         else:
             await cb.bot.send_message(cb.from_user.id, caption_corr + "\n⚠️ Фото коригування відсутнє.")
 
-    await cb.answer("📄 Відправив накладні в чат", show_alert=True)
+    await cb.answer("📄 Накладні відправив у чат", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("mva:close_"))
@@ -139,8 +169,8 @@ async def mva_close(cb: CallbackQuery):
         except Exception:
             pass
 
-    await cb.message.edit_text(
-        f"✅ Закрито.\n📨 Учасникам доставлено: <b>{delivered}</b>\n\n" + move_text(m),
-        reply_markup=admin_move_actions_kb(move_id),
-    )
     await cb.answer("Closed ✅", show_alert=True)
+
+    # після закриття — повертаємось в АКТИВНІ (щоб закрите зникло зі списку)
+    await mva_active(cb)
+

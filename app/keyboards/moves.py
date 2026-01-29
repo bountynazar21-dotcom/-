@@ -56,7 +56,18 @@ def point_to_kb(move_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-def admin_moves_list_kb(moves: list[dict]) -> InlineKeyboardMarkup:
+# ---------- admin: tabs + lists ----------
+def admin_moves_tabs_kb(active: bool = True) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🟢 Активні", callback_data="mva:active"),
+            InlineKeyboardButton(text="✅ Завершені", callback_data="mva:closed"),
+        ],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="mv:menu")],
+    ])
+
+
+def admin_moves_list_kb(moves: list[dict], back_cb: str) -> InlineKeyboardMarkup:
     rows = []
     for m in moves:
         mid = m["id"]
@@ -67,13 +78,13 @@ def admin_moves_list_kb(moves: list[dict]) -> InlineKeyboardMarkup:
             text=f"#{mid} [{status}] {fp} → {tp}"[:60],
             callback_data=f"mva:view_{mid}"
         )])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="mv:menu")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_move_actions_kb(move_id: int) -> InlineKeyboardMarkup:
+def admin_move_actions_kb(move_id: int, back_cb: str = "mva:active") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📄 Показати накладні", callback_data=f"mva:docs_{move_id}")],
         [InlineKeyboardButton(text="✅ Закрити переміщення", callback_data=f"mva:close_{move_id}")],
-        [InlineKeyboardButton(text="⬅️ Назад до списку", callback_data="mva:list")],
+        [InlineKeyboardButton(text="⬅️ Назад до списку", callback_data=back_cb)],
     ])
