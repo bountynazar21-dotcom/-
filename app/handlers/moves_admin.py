@@ -1,5 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
 
 from ..db import moves_repo as mv_repo
 from ..db import auth_repo
@@ -11,6 +12,20 @@ from ..keyboards.moves import (
 from ..utils.text import move_text
 
 router = Router()
+
+
+async def safe_edit(cb: CallbackQuery, text: str, reply_markup=None):
+    """
+    Telegram не дозволяє edit_text якщо контент/клава не змінились.
+    Цей хелпер гасить "message is not modified" і не валить бота.
+    """
+    try:
+        await cb.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            await cb.answer()
+            return
+        raise
 
 
 def _uniq(ids: list[int]) -> list[int]:
@@ -49,11 +64,12 @@ async def mva_list(cb: CallbackQuery):
 async def mva_active(cb: CallbackQuery):
     items = mv_repo.list_moves_active(50)
     if not items:
-        await cb.message.edit_text("🟢 Активних переміщень нема.", reply_markup=admin_moves_tabs_kb(True))
+        await safe_edit(cb, "🟢 Активних переміщень нема.", reply_markup=admin_moves_tabs_kb(True))
         await cb.answer()
         return
 
-    await cb.message.edit_text(
+    await safe_edit(
+        cb,
         "🟢 <b>Активні переміщення:</b>",
         reply_markup=admin_moves_list_kb(items, "mva:active"),
     )
@@ -64,11 +80,12 @@ async def mva_active(cb: CallbackQuery):
 async def mva_closed(cb: CallbackQuery):
     items = mv_repo.list_moves_closed(30)
     if not items:
-        await cb.message.edit_text("✅ Завершених переміщень нема.", reply_markup=admin_moves_tabs_kb(False))
+        await safe_edit(cb, "✅ Завершених переміщень нема.", reply_markup=admin_moves_tabs_kb(False))
         await cb.answer()
         return
 
-    await cb.message.edit_text(
+    await safe_edit(
+        cb,
         "✅ <b>Завершені переміщення (останні):</b>",
         reply_markup=admin_moves_list_kb(items, "mva:closed"),
     )
@@ -86,7 +103,8 @@ async def mva_view(cb: CallbackQuery):
     # визначимо, звідки прийшли (active/closed), щоб "назад" працював коректно
     back_cb = "mva:active" if (m.get("status") not in ("done", "canceled")) else "mva:closed"
 
-    await cb.message.edit_text(
+    await safe_edit(
+        cb,
         "📦 <b>Переміщення обране</b>\n\n" + move_text(m),
         reply_markup=admin_move_actions_kb(move_id, back_cb=back_cb),
     )
@@ -173,4 +191,3 @@ async def mva_close(cb: CallbackQuery):
 
     # після закриття — повертаємось в АКТИВНІ (щоб закрите зникло зі списку)
     await mva_active(cb)
-
