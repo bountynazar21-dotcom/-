@@ -9,8 +9,8 @@ from aiogram.client.default import DefaultBotProperties
 from .logger import setup_logging
 from .config import load_config
 
-from .db.sqlite import init_db
-from .db.schema import ensure_schema
+from .db.database import init_db as init_pg
+from .db.pg_schema import ensure_schema as ensure_pg_schema
 
 from .handlers.start import router as start_router
 from .handlers.locations import router as locations_router
@@ -31,9 +31,9 @@ async def main() -> None:
 
     cfg = load_config()
 
-    # DB init + schema
-    init_db(cfg.db_path)
-    ensure_schema()
+    # ✅ Postgres init + schema
+    await init_pg()
+    await ensure_pg_schema()
 
     bot = Bot(
         token=cfg.bot_token,
@@ -42,11 +42,9 @@ async def main() -> None:
 
     dp = Dispatcher()
 
-    # middleware: admin gate
     dp.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
     dp.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
 
-    # routers
     dp.include_router(start_router)
     dp.include_router(locations_router)
     dp.include_router(moves_router)
