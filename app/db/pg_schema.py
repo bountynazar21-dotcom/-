@@ -71,15 +71,7 @@ def ensure_schema():
         );
         """)
 
-        # ---- indexes for speed (safe to run many times) ----
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_points_city_id ON points(city_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_point_users_point_id ON point_users(point_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_status ON moves(status);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_created_at ON moves(created_at DESC);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_from_point ON moves(from_point_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_to_point ON moves(to_point_id);")
-
-                # move_invoices (історія накладних по версіях)
+        # move_invoices (fallback: 1 фото на версію)
         cur.execute("""
         CREATE TABLE IF NOT EXISTS move_invoices (
             id SERIAL PRIMARY KEY,
@@ -91,5 +83,26 @@ def ensure_schema():
         );
         """)
 
-        # індекси (щоб швидко діставати)
+        # move_invoice_photos (основна: багато фото на версію)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS move_invoice_photos (
+            id SERIAL PRIMARY KEY,
+            move_id INT NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+            version INT NOT NULL,
+            photo_file_id TEXT NOT NULL,
+            position INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        """)
+
+        # ---- indexes for speed (safe to run many times) ----
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_points_city_id ON points(city_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_point_users_point_id ON point_users(point_id);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_status ON moves(status);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_created_at ON moves(created_at DESC);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_from_point ON moves(from_point_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_to_point ON moves(to_point_id);")
+
         cur.execute("CREATE INDEX IF NOT EXISTS idx_move_invoices_move_id ON move_invoices(move_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_inv_photos_move_ver ON move_invoice_photos(move_id, version);")

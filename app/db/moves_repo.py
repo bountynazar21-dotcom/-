@@ -36,9 +36,10 @@ def set_photo(move_id: int, file_id: str) -> None:
     with get_cur() as cur:
         cur.execute("UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s", (file_id, move_id))
 
-    # записати в історію як поточну версію
+    # записати як V поточну версію (і як 1 фото)
     v = get_invoice_version(move_id)
-    add_invoice_version(move_id, v, file_id)
+    add_invoice_version(move_id, v, file_id)          # fallback таблиця (одне фото)
+    add_invoice_photos(move_id, v, [file_id])         # нова таблиця (список фото)
 
 
 def set_note(move_id: int, note: str) -> None:
@@ -211,8 +212,8 @@ def set_invoice_photo(move_id: int, file_id: str) -> None:
         cur.execute("UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s", (file_id, move_id))
 
     v = get_invoice_version(move_id)
-    add_invoice_version(move_id, v, file_id)
-
+    add_invoice_version(move_id, v, file_id)          # fallback
+    add_invoice_photos(move_id, v, [file_id])  
 
 
 def reset_for_reinvoice(move_id: int) -> None:
@@ -264,3 +265,55 @@ def get_invoice_version(move_id: int) -> int:
         row = cur.fetchone()
         return int(row["invoice_version"]) if row and row.get("invoice_version") else 1
 
+def add_invoice_photos(move_id: int, version: int, file_ids: list[str]) -> None:
+    """
+    Зберігає список фото накладної для конкретної версії.
+    Якщо така версія вже була — перезаписує (щоб reinvoice оновлював).
+    """
+    ensure_schema()
+    with get_cur() as cur:
+        # перезаписуємо конкретну версію
+        cur.execute("DELETE FROM move_invoice_photos WHERE move_id=%s AND version=%s", (move_id, version))
+        for idx, fid in enumerate(file_ids):
+            cur.execute(
+                """
+                INSERT INTO move_invoice_photos(move_id, version, photo_file_id, position)
+                VALUES(%s, %s, %s, %s)
+                """,
+                (move_id, version, fid, idx),
+            )
+
+def list_invoice_photos(move_id: int, version: int) -> list[str]:
+    """
+    Повертає всі фото накладної для версії (в правильному порядку).
+    """
+    ensure_schema()
+    with get_cur() as cur:
+        cur.execute(
+            """
+            SELECT photo_file_id
+            FROM move_invoice_photos
+            WHERE move_id=%s AND version=%s
+            ORDER BY position ASC
+            """,
+            (move_id, version),
+        )
+        rows = cur.fetchall()
+        return [r["photo_file_id"] for r in rows]
+
+def list_invoice_versions(move_id: int) -> list[int]:
+    """
+    Повертає список версій накладних, які є в move_invoice_photos.
+    """
+    ensure_schema()
+    with get_cur() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT version
+            FROM move_invoice_photos
+            WHERE move_id=%s
+            ORDER BY version ASC
+            """,
+            (move_id,),
+        )
+        return [int(r["version"]) for r in cur.fetchall()]
