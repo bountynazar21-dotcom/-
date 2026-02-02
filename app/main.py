@@ -9,7 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from .logger import setup_logging
 from .config import load_config
 
-from .db.pg_schema import ensure_schema  # ✅ psycopg2 schema
+from .db.pg_schema import ensure_schema
 
 from .handlers.start import router as start_router
 from .handlers.locations import router as locations_router
@@ -30,7 +30,7 @@ async def main() -> None:
 
     cfg = load_config()
 
-    # ✅ створюємо таблиці в Postgres
+    # ✅ Postgres schema init
     ensure_schema()
 
     bot = Bot(
@@ -39,7 +39,6 @@ async def main() -> None:
     )
 
     dp = Dispatcher()
-
     dp.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
     dp.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
 

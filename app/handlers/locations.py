@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 
 from app.keyboards.locations import locations_menu_kb, cities_kb, points_kb
 from app.states.locations import LocationsStates
-from app.db import ensure_schema
+from app.db.pg_schema import ensure_schema
 from app.db import locations_repo as repo
 from app.utils.text import cities_text
 

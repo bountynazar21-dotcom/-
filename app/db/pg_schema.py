@@ -32,7 +32,7 @@ def ensure_schema():
         );
         """)
 
-        # point_users (1 user -> 1 TT, але 1 TT -> багато users)
+        # point_users (1 user -> 1 TT, 1 TT -> багато users)
         cur.execute("""
         CREATE TABLE IF NOT EXISTS point_users (
             telegram_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -56,7 +56,6 @@ def ensure_schema():
 
             photo_file_id TEXT,
             note TEXT,
-
             invoice_version INT DEFAULT 1,
 
             handed_at TIMESTAMP,
@@ -71,3 +70,11 @@ def ensure_schema():
             correction_at TIMESTAMP
         );
         """)
+
+        # ---- indexes for speed (safe to run many times) ----
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_points_city_id ON points(city_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_point_users_point_id ON point_users(point_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_status ON moves(status);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_created_at ON moves(created_at DESC);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_from_point ON moves(from_point_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_to_point ON moves(to_point_id);")
