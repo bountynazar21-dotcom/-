@@ -56,6 +56,14 @@ def point_to_kb(move_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+# ✅ NEW: finish multi-photo reinvoice
+def reinvoice_done_kb(move_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Готово, надіслати ТТ", callback_data=f"mva:reinvoice_done_{move_id}")],
+        [InlineKeyboardButton(text="⬅️ Скасувати", callback_data=f"mva:reinvoice_cancel_{move_id}")],
+    ])
+
+
 # ---------- admin: tabs + lists ----------
 def admin_moves_tabs_kb(active: bool = True) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

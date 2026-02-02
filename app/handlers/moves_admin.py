@@ -1,6 +1,6 @@
 # app/handlers/moves_admin.py
 from aiogram import Router, F
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InputMediaPhoto
 from aiogram.exceptions import TelegramBadRequest
 
 from ..db import moves_repo as mv_repo
@@ -118,37 +118,72 @@ async def mva_docs(cb: CallbackQuery):
         await cb.answer("Не знайдено.", show_alert=True)
         return
 
-    # 1) Накладні по версіях (V1/V2/V3...) якщо є історія
-    invoices = []
+    # ---------- 1) НАКЛАДНІ: спочатку multi-photo таблиця ----------
+    sent_any = False
+    versions = []
     try:
-        invoices = mv_repo.list_invoices(move_id)
+        versions = mv_repo.list_invoice_versions(move_id)  # з move_invoice_photos
     except Exception:
-        invoices = []
+        versions = []
 
-    if invoices:
-        for inv in invoices:
-            v = inv.get("version")
-            fid = inv.get("photo_file_id")
-            cap = f"📄 <b>Накладна V{v}</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
-            if fid:
-                try:
-                    await cb.bot.send_photo(cb.from_user.id, photo=fid, caption=cap)
-                except Exception:
-                    await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Не зміг надіслати фото.")
-            else:
-                await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Фото відсутнє.")
-    else:
-        # fallback: "основна" накладна з moves
-        caption_main = f"📄 <b>Накладна (основна)</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
-        if m.get("photo_file_id"):
+    if versions:
+        for v in versions:
+            photos = []
             try:
-                await cb.bot.send_photo(cb.from_user.id, photo=m["photo_file_id"], caption=caption_main)
+                photos = mv_repo.list_invoice_photos(move_id, v)
             except Exception:
-                await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Не зміг надіслати фото.")
-        else:
-            await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Фото накладної відсутнє.")
+                photos = []
 
-    # 2) Коригування (запит від ТТ) — окремо
+            cap = f"📄 <b>Накладна V{v}</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
+
+            if photos:
+                try:
+                    if len(photos) == 1:
+                        await cb.bot.send_photo(cb.from_user.id, photo=photos[0], caption=cap)
+                    else:
+                        media = [InputMediaPhoto(media=fid) for fid in photos]
+                        media[0].caption = cap
+                        media[0].parse_mode = "HTML"
+                        await cb.bot.send_media_group(cb.from_user.id, media=media)
+                    sent_any = True
+                except Exception:
+                    await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Не зміг надіслати фото/альбом.")
+            else:
+                await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Фото відсутні.")
+    else:
+        # ---------- 2) fallback: move_invoices (1 фото на версію) ----------
+        invoices = []
+        try:
+            invoices = mv_repo.list_invoices(move_id)
+        except Exception:
+            invoices = []
+
+        if invoices:
+            for inv in invoices:
+                v = inv.get("version")
+                fid = inv.get("photo_file_id")
+                cap = f"📄 <b>Накладна V{v}</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
+                if fid:
+                    try:
+                        await cb.bot.send_photo(cb.from_user.id, photo=fid, caption=cap)
+                        sent_any = True
+                    except Exception:
+                        await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Не зміг надіслати фото.")
+                else:
+                    await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Фото відсутнє.")
+        else:
+            # ---------- 3) fallback: moves.photo_file_id ----------
+            caption_main = f"📄 <b>Накладна</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
+            if m.get("photo_file_id"):
+                try:
+                    await cb.bot.send_photo(cb.from_user.id, photo=m["photo_file_id"], caption=caption_main)
+                    sent_any = True
+                except Exception:
+                    await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Не зміг надіслати фото.")
+            else:
+                await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Фото накладної відсутнє.")
+
+    # ---------- 4) КОРИГУВАННЯ (запит від ТТ) ----------
     if (m.get("correction_status") or "none") != "none":
         caption_corr = (
             f"⚠️ <b>Коригування</b>\n🆔 ID: <b>{move_id}</b>\n"
