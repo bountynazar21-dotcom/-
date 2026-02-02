@@ -36,6 +36,10 @@ def set_photo(move_id: int, file_id: str) -> None:
     with get_cur() as cur:
         cur.execute("UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s", (file_id, move_id))
 
+    # записати в історію як поточну версію
+    v = get_invoice_version(move_id)
+    add_invoice_version(move_id, v, file_id)
+
 
 def set_note(move_id: int, note: str) -> None:
     ensure_schema()
@@ -204,10 +208,11 @@ def bump_invoice_version(move_id: int) -> None:
 def set_invoice_photo(move_id: int, file_id: str) -> None:
     ensure_schema()
     with get_cur() as cur:
-        cur.execute(
-            "UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s",
-            (file_id, move_id),
-        )
+        cur.execute("UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s", (file_id, move_id))
+
+    v = get_invoice_version(move_id)
+    add_invoice_version(move_id, v, file_id)
+
 
 
 def reset_for_reinvoice(move_id: int) -> None:
@@ -226,4 +231,36 @@ def reset_for_reinvoice(move_id: int) -> None:
             (move_id,),
         )
 
+def add_invoice_version(move_id: int, version: int, file_id: str) -> None:
+    ensure_schema()
+    with get_cur() as cur:
+        cur.execute(
+            """
+            INSERT INTO move_invoices(move_id, version, photo_file_id)
+            VALUES(%s, %s, %s)
+            ON CONFLICT (move_id, version) DO UPDATE SET photo_file_id = EXCLUDED.photo_file_id
+            """,
+            (move_id, version, file_id),
+        )
+
+def list_invoices(move_id: int) -> list[dict]:
+    ensure_schema()
+    with get_cur() as cur:
+        cur.execute(
+            """
+            SELECT version, photo_file_id, created_at
+            FROM move_invoices
+            WHERE move_id=%s
+            ORDER BY version ASC
+            """,
+            (move_id,),
+        )
+        return cur.fetchall()
+
+def get_invoice_version(move_id: int) -> int:
+    ensure_schema()
+    with get_cur() as cur:
+        cur.execute("SELECT invoice_version FROM moves WHERE id=%s", (move_id,))
+        row = cur.fetchone()
+        return int(row["invoice_version"]) if row and row.get("invoice_version") else 1
 

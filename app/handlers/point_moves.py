@@ -1,6 +1,6 @@
 # app/handlers/point_moves.py
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
 from ..db import auth_repo
@@ -15,10 +15,8 @@ def _my_point_id(user_id: int) -> int | None:
 
 
 def _point_label(m: dict, side: str) -> str:
-    # side: "from" or "to"
     key = "from_point_name" if side == "from" else "to_point_name"
-    name = m.get(key) or "—"
-    return name
+    return m.get(key) or "—"
 
 
 def _admin_msg_handed(m: dict) -> str:
@@ -68,7 +66,6 @@ async def pt_handed(cb: CallbackQuery):
     if not my_point:
         return await cb.answer("❗ Ти не прив’язаний до ТТ", show_alert=True)
 
-    # тільки ТТ-відправник може натиснути "Віддав"
     if int(my_point) != int(m.get("from_point_id") or 0):
         return await cb.answer("⛔ Це не твоє переміщення (ти не відправник)", show_alert=True)
 
@@ -77,14 +74,12 @@ async def pt_handed(cb: CallbackQuery):
     m = mv_repo.get_move(move_id)
     op_id = m.get("operator_id") or m.get("created_by")
 
-    # 1) івент адміну/оператору
     if op_id:
         try:
             await cb.bot.send_message(op_id, _admin_msg_handed(m))
         except Exception:
             pass
 
-    # 2) якщо обидві точки підтвердили — закриваємо і шлемо фінал
     if m.get("received_at"):
         mv_repo.set_status(move_id, "done")
         m2 = mv_repo.get_move(move_id)
@@ -108,7 +103,6 @@ async def pt_received(cb: CallbackQuery):
     if not my_point:
         return await cb.answer("❗ Ти не прив’язаний до ТТ", show_alert=True)
 
-    # тільки ТТ-отримувач може натиснути "Отримав"
     if int(my_point) != int(m.get("to_point_id") or 0):
         return await cb.answer("⛔ Це не твоє переміщення (ти не отримувач)", show_alert=True)
 
@@ -117,14 +111,12 @@ async def pt_received(cb: CallbackQuery):
     m = mv_repo.get_move(move_id)
     op_id = m.get("operator_id") or m.get("created_by")
 
-    # 1) івент адміну/оператору
     if op_id:
         try:
             await cb.bot.send_message(op_id, _admin_msg_received(m))
         except Exception:
             pass
 
-    # 2) якщо обидві точки підтвердили — закриваємо і шлемо фінал
     if m.get("handed_at"):
         mv_repo.set_status(move_id, "done")
         m2 = mv_repo.get_move(move_id)
@@ -148,7 +140,6 @@ async def pt_corr_start(cb: CallbackQuery, state: FSMContext):
     if not my_point:
         return await cb.answer("❗ Ти не прив’язаний до ТТ", show_alert=True)
 
-    # коригування може робити і відправник, і отримувач
     if int(my_point) not in {int(m.get("from_point_id") or 0), int(m.get("to_point_id") or 0)}:
         return await cb.answer("⛔ Це не твоє переміщення", show_alert=True)
 
@@ -199,7 +190,6 @@ async def pt_corr_photo(message: Message, state: FSMContext):
 
     op_id = m.get("operator_id") or m.get("created_by")
 
-    # визначимо назву точки, яка ініціює коригування
     point_name = "—"
     if point_id == int(m.get("from_point_id") or 0):
         point_name = _point_label(m, "from")
@@ -208,12 +198,17 @@ async def pt_corr_photo(message: Message, state: FSMContext):
 
     text = _admin_msg_correction(m, point_name, message.from_user.id, note)
 
+    # ✅ кнопка для оператора: "Надіслати нову накладну"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↪️ Надіслати нову накладну", callback_data=f"mva:reinvoice_{move_id}")]
+    ])
+
     if op_id:
         try:
             if file_id:
-                await message.bot.send_photo(op_id, photo=file_id, caption=text)
+                await message.bot.send_photo(op_id, photo=file_id, caption=text, reply_markup=kb)
             else:
-                await message.bot.send_message(op_id, text)
+                await message.bot.send_message(op_id, text, reply_markup=kb)
         except Exception:
             pass
 

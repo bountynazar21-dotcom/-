@@ -78,3 +78,18 @@ def ensure_schema():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_created_at ON moves(created_at DESC);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_from_point ON moves(from_point_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_to_point ON moves(to_point_id);")
+
+                # move_invoices (історія накладних по версіях)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS move_invoices (
+            id SERIAL PRIMARY KEY,
+            move_id INT NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+            version INT NOT NULL,
+            photo_file_id TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(move_id, version)
+        );
+        """)
+
+        # індекси (щоб швидко діставати)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_move_invoices_move_id ON move_invoices(move_id);")

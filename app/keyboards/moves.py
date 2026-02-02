@@ -85,6 +85,7 @@ def admin_moves_list_kb(moves: list[dict], back_cb: str) -> InlineKeyboardMarkup
 def admin_move_actions_kb(move_id: int, back_cb: str = "mva:active") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📄 Показати накладні", callback_data=f"mva:docs_{move_id}")],
+        [InlineKeyboardButton(text="↪️ Надіслати нову накладну", callback_data=f"mva:reinvoice_{move_id}")],
         [InlineKeyboardButton(text="✅ Закрити переміщення", callback_data=f"mva:close_{move_id}")],
         [InlineKeyboardButton(text="⬅️ Назад до списку", callback_data=back_cb)],
     ])

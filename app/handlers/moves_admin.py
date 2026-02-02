@@ -1,3 +1,4 @@
+# app/handlers/moves_admin.py
 from aiogram import Router, F
 from aiogram.types import CallbackQuery
 from aiogram.exceptions import TelegramBadRequest
@@ -56,7 +57,6 @@ def _participants_ids(m: dict) -> list[int]:
 
 @router.callback_query(F.data == "mva:list")
 async def mva_list(cb: CallbackQuery):
-    # за замовчуванням відкриваємо АКТИВНІ
     await mva_active(cb)
 
 
@@ -100,7 +100,6 @@ async def mva_view(cb: CallbackQuery):
         await cb.answer("Не знайдено.", show_alert=True)
         return
 
-    # визначимо, звідки прийшли (active/closed), щоб "назад" працював коректно
     back_cb = "mva:active" if (m.get("status") not in ("done", "canceled")) else "mva:closed"
 
     await safe_edit(
@@ -119,17 +118,37 @@ async def mva_docs(cb: CallbackQuery):
         await cb.answer("Не знайдено.", show_alert=True)
         return
 
-    # 1) Основна накладна
-    caption_main = f"📄 <b>Накладна (основна)</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
-    if m.get("photo_file_id"):
-        try:
-            await cb.bot.send_photo(cb.from_user.id, photo=m["photo_file_id"], caption=caption_main)
-        except Exception:
-            await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Не зміг надіслати фото.")
-    else:
-        await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Фото накладної відсутнє.")
+    # 1) Накладні по версіях (V1/V2/V3...) якщо є історія
+    invoices = []
+    try:
+        invoices = mv_repo.list_invoices(move_id)
+    except Exception:
+        invoices = []
 
-    # 2) Коригування (якщо було)
+    if invoices:
+        for inv in invoices:
+            v = inv.get("version")
+            fid = inv.get("photo_file_id")
+            cap = f"📄 <b>Накладна V{v}</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
+            if fid:
+                try:
+                    await cb.bot.send_photo(cb.from_user.id, photo=fid, caption=cap)
+                except Exception:
+                    await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Не зміг надіслати фото.")
+            else:
+                await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Фото відсутнє.")
+    else:
+        # fallback: "основна" накладна з moves
+        caption_main = f"📄 <b>Накладна (основна)</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
+        if m.get("photo_file_id"):
+            try:
+                await cb.bot.send_photo(cb.from_user.id, photo=m["photo_file_id"], caption=caption_main)
+            except Exception:
+                await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Не зміг надіслати фото.")
+        else:
+            await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Фото накладної відсутнє.")
+
+    # 2) Коригування (запит від ТТ) — окремо
     if (m.get("correction_status") or "none") != "none":
         caption_corr = (
             f"⚠️ <b>Коригування</b>\n🆔 ID: <b>{move_id}</b>\n"
@@ -157,11 +176,9 @@ async def mva_close(cb: CallbackQuery):
         await cb.answer("Не знайдено.", show_alert=True)
         return
 
-    # Закриваємо в БД
     mv_repo.set_status(move_id, "done")
     m = mv_repo.get_move(move_id) or m
 
-    # Текст учасникам
     msg = (
         "✅ <b>Переміщення закрито оператором</b>\n"
         f"🆔 ID: <b>{move_id}</b>\n\n"
@@ -169,7 +186,6 @@ async def mva_close(cb: CallbackQuery):
         f"📥 Отримувач: <b>{m.get('to_point_name') or '—'}</b>\n"
     )
 
-    # Сповіщаємо всіх учасників (обидві ТТ)
     participants = _participants_ids(m)
     delivered = 0
     for uid in participants:
@@ -179,7 +195,6 @@ async def mva_close(cb: CallbackQuery):
         except Exception:
             pass
 
-    # Оператору теж (якщо є)
     op_id = m.get("operator_id") or m.get("created_by")
     if op_id:
         try:
@@ -188,6 +203,4 @@ async def mva_close(cb: CallbackQuery):
             pass
 
     await cb.answer("Closed ✅", show_alert=True)
-
-    # після закриття — повертаємось в АКТИВНІ (щоб закрите зникло зі списку)
     await mva_active(cb)
