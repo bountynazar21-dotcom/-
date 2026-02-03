@@ -55,6 +55,38 @@ def _participants_ids(m: dict) -> list[int]:
     return _uniq(ids)
 
 
+async def _send_album_or_single_to_me(cb: CallbackQuery, photos: list[str], caption: str) -> None:
+    """
+    Адміну/оператору шлемо:
+    - 1 фото: send_photo(caption)
+    - 2+ фото: send_media_group з caption тільки на першому
+    """
+    if not photos:
+        await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Фото відсутні.")
+        return
+
+    if len(photos) == 1:
+        try:
+            await cb.bot.send_photo(cb.from_user.id, photo=photos[0], caption=caption)
+        except Exception:
+            await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Не зміг надіслати фото.")
+        return
+
+    try:
+        media = [InputMediaPhoto(media=fid) for fid in photos]
+        media[0].caption = caption
+        media[0].parse_mode = "HTML"
+        await cb.bot.send_media_group(cb.from_user.id, media=media)
+    except Exception:
+        # fallback: якщо з якихось причин медіагрупа не шлеться — шлемо по одному
+        for fid in photos:
+            try:
+                await cb.bot.send_photo(cb.from_user.id, photo=fid, caption=None)
+            except Exception:
+                pass
+        await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Альбом не відправився, відправив як вийшло.")
+
+
 @router.callback_query(F.data == "mva:list")
 async def mva_list(cb: CallbackQuery):
     await mva_active(cb)
@@ -118,72 +150,43 @@ async def mva_docs(cb: CallbackQuery):
         await cb.answer("Не знайдено.", show_alert=True)
         return
 
-    # ---------- 1) НАКЛАДНІ: спочатку multi-photo таблиця ----------
-    sent_any = False
-    versions = []
+    # 1) Дістаємо всі версії (V1/V2/V3...)
     try:
-        versions = mv_repo.list_invoice_versions(move_id)  # з move_invoice_photos
+        invoices = mv_repo.list_invoices(move_id)
     except Exception:
-        versions = []
-
-    if versions:
-        for v in versions:
-            photos = []
-            try:
-                photos = mv_repo.list_invoice_photos(move_id, v)
-            except Exception:
-                photos = []
-
-            cap = f"📄 <b>Накладна V{v}</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
-
-            if photos:
-                try:
-                    if len(photos) == 1:
-                        await cb.bot.send_photo(cb.from_user.id, photo=photos[0], caption=cap)
-                    else:
-                        media = [InputMediaPhoto(media=fid) for fid in photos]
-                        media[0].caption = cap
-                        media[0].parse_mode = "HTML"
-                        await cb.bot.send_media_group(cb.from_user.id, media=media)
-                    sent_any = True
-                except Exception:
-                    await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Не зміг надіслати фото/альбом.")
-            else:
-                await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Фото відсутні.")
-    else:
-        # ---------- 2) fallback: move_invoices (1 фото на версію) ----------
         invoices = []
+
+    # Якщо історії версій нема — зробимо фейковий список з поточної
+    if not invoices:
+        current_v = m.get("invoice_version") or 1
+        invoices = [{"version": current_v, "photo_file_id": m.get("photo_file_id")}]
+
+    # 2) Для кожної версії пробуємо витягнути multi-photo (move_invoice_photos).
+    #    Якщо нема — fallback на move_invoices.photo_file_id або moves.photo_file_id
+    sent_any = False
+    for inv in invoices:
+        v = int(inv.get("version") or 1)
+
+        photos: list[str] = []
         try:
-            invoices = mv_repo.list_invoices(move_id)
+            # ✅ твій новий метод з moves_repo.py
+            photos = mv_repo.list_invoice_photos(move_id, v)
         except Exception:
-            invoices = []
+            photos = []
 
-        if invoices:
-            for inv in invoices:
-                v = inv.get("version")
-                fid = inv.get("photo_file_id")
-                cap = f"📄 <b>Накладна V{v}</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
-                if fid:
-                    try:
-                        await cb.bot.send_photo(cb.from_user.id, photo=fid, caption=cap)
-                        sent_any = True
-                    except Exception:
-                        await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Не зміг надіслати фото.")
-                else:
-                    await cb.bot.send_message(cb.from_user.id, cap + "\n\n⚠️ Фото відсутнє.")
-        else:
-            # ---------- 3) fallback: moves.photo_file_id ----------
-            caption_main = f"📄 <b>Накладна</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
-            if m.get("photo_file_id"):
-                try:
-                    await cb.bot.send_photo(cb.from_user.id, photo=m["photo_file_id"], caption=caption_main)
-                    sent_any = True
-                except Exception:
-                    await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Не зміг надіслати фото.")
-            else:
-                await cb.bot.send_message(cb.from_user.id, caption_main + "\n\n⚠️ Фото накладної відсутнє.")
+        if not photos:
+            fid = inv.get("photo_file_id") or m.get("photo_file_id")
+            if fid:
+                photos = [fid]
 
-    # ---------- 4) КОРИГУВАННЯ (запит від ТТ) ----------
+        cap = f"📄 <b>Накладна V{v}</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
+        await _send_album_or_single_to_me(cb, photos, cap)
+        sent_any = True
+
+    if not sent_any:
+        await cb.bot.send_message(cb.from_user.id, f"🆔 ID: <b>{move_id}</b>\n\n" + move_text(m) + "\n\n⚠️ Накладних не знайдено.")
+
+    # 3) Коригування — окремо (як було)
     if (m.get("correction_status") or "none") != "none":
         caption_corr = (
             f"⚠️ <b>Коригування</b>\n🆔 ID: <b>{move_id}</b>\n"
@@ -239,3 +242,4 @@ async def mva_close(cb: CallbackQuery):
 
     await cb.answer("Closed ✅", show_alert=True)
     await mva_active(cb)
+

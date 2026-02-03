@@ -56,11 +56,13 @@ def point_to_kb(move_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-# ✅ NEW: finish multi-photo reinvoice
-def reinvoice_done_kb(move_id: int) -> InlineKeyboardMarkup:
+# ✅ НОВЕ: кнопки для збору багатьох фото на етапі "Додати/Змінити фото"
+def mv_photos_done_kb(move_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Готово, надіслати ТТ", callback_data=f"mva:reinvoice_done_{move_id}")],
-        [InlineKeyboardButton(text="⬅️ Скасувати", callback_data=f"mva:reinvoice_cancel_{move_id}")],
+        [
+            InlineKeyboardButton(text="✅ Готово", callback_data=f"mv:photo_done_{move_id}"),
+            InlineKeyboardButton(text="❌ Скасувати", callback_data=f"mv:photo_cancel_{move_id}"),
+        ]
     ])
 
 
@@ -97,3 +99,4 @@ def admin_move_actions_kb(move_id: int, back_cb: str = "mva:active") -> InlineKe
         [InlineKeyboardButton(text="✅ Закрити переміщення", callback_data=f"mva:close_{move_id}")],
         [InlineKeyboardButton(text="⬅️ Назад до списку", callback_data=back_cb)],
     ])
+
