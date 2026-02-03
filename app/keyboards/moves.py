@@ -26,8 +26,8 @@ def points_kb(points: list[tuple[int, str]], prefix: str, back_cb: str) -> Inlin
 
 def move_review_kb(move_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📷 Додати/Змінити фото", callback_data=f"mv:photo_{move_id}")],
-        [InlineKeyboardButton(text="📝 Додати/Змінити коментар", callback_data=f"mv:note_{move_id}")],
+        [InlineKeyboardButton(text="📷 Додати / змінити фото", callback_data=f"mv:photo_{move_id}")],
+        [InlineKeyboardButton(text="📝 Додати / змінити коментар", callback_data=f"mv:note_{move_id}")],
         [InlineKeyboardButton(text="✅ Відправити на ТТ", callback_data=f"mv:send_{move_id}")],
         [InlineKeyboardButton(text="🗑 Скасувати", callback_data=f"mv:cancel_{move_id}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="mv:menu")],
@@ -55,7 +55,26 @@ def point_to_kb(move_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⚠️ Коригування", callback_data=f"pt:corr_{move_id}")],
     ])
 
-# ---------- admin: tabs + lists ----------
+
+# ✅ MULTI-PHOTO ДЛЯ СТВОРЕННЯ ПЕРЕМІЩЕННЯ
+def mv_photos_done_kb(move_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✅ Готово",
+                callback_data=f"mv:photos_done_{move_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="❌ Скасувати",
+                callback_data=f"mv:photos_cancel_{move_id}"
+            )
+        ],
+    ])
+
+
+# ---------- admin ----------
 def admin_moves_tabs_kb(active: bool = True) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -73,10 +92,12 @@ def admin_moves_list_kb(moves: list[dict], back_cb: str) -> InlineKeyboardMarkup
         fp = m.get("from_point_name") or "—"
         tp = m.get("to_point_name") or "—"
         status = m.get("status") or "?"
-        rows.append([InlineKeyboardButton(
-            text=f"#{mid} [{status}] {fp} → {tp}"[:60],
-            callback_data=f"mva:view_{mid}"
-        )])
+        rows.append([
+            InlineKeyboardButton(
+                text=f"#{mid} [{status}] {fp} → {tp}"[:60],
+                callback_data=f"mva:view_{mid}"
+            )
+        ])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -89,6 +110,8 @@ def admin_move_actions_kb(move_id: int, back_cb: str = "mva:active") -> InlineKe
         [InlineKeyboardButton(text="⬅️ Назад до списку", callback_data=back_cb)],
     ])
 
+
+# ✅ MULTI-PHOTO REINVOICE
 def reinvoice_done_kb(move_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
