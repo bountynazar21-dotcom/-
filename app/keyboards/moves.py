@@ -55,17 +55,6 @@ def point_to_kb(move_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⚠️ Коригування", callback_data=f"pt:corr_{move_id}")],
     ])
 
-
-# ✅ НОВЕ: кнопки для збору багатьох фото на етапі "Додати/Змінити фото"
-def mv_photos_done_kb(move_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Готово", callback_data=f"mv:photo_done_{move_id}"),
-            InlineKeyboardButton(text="❌ Скасувати", callback_data=f"mv:photo_cancel_{move_id}"),
-        ]
-    ])
-
-
 # ---------- admin: tabs + lists ----------
 def admin_moves_tabs_kb(active: bool = True) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
