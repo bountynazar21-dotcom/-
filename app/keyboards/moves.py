@@ -100,3 +100,18 @@ def admin_move_actions_kb(move_id: int, back_cb: str = "mva:active") -> InlineKe
         [InlineKeyboardButton(text="⬅️ Назад до списку", callback_data=back_cb)],
     ])
 
+def reinvoice_done_kb(move_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✅ Готово",
+                callback_data=f"mva:reinvoice_done_{move_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="❌ Скасувати",
+                callback_data=f"mva:reinvoice_cancel_{move_id}"
+            )
+        ],
+    ])
