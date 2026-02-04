@@ -72,11 +72,23 @@ def point_to_confirmed_kb(move_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-# ✅ MULTI-PHOTO ДЛЯ СТВОРЕННЯ / ДОДАВАННЯ ФОТО
+# ✅ MULTI-PHOTO ДЛЯ СТВОРЕННЯ ПЕРЕМІЩЕННЯ
 def mv_photos_done_kb(move_id: int) -> InlineKeyboardMarkup:
+    # ВАЖЛИВО: callback_data -> mv:photo_done_ / mv:photo_cancel_
+    # (бо в handlers ми ловимо ці префікси, і так нема розсинхрону)
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Готово", callback_data=f"mv:photo_done_{move_id}")],
-        [InlineKeyboardButton(text="❌ Скасувати", callback_data=f"mv:photo_cancel_{move_id}")],
+        [
+            InlineKeyboardButton(
+                text="✅ Готово",
+                callback_data=f"mv:photo_done_{move_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="❌ Скасувати",
+                callback_data=f"mv:photo_cancel_{move_id}"
+            )
+        ],
     ])
 
 
