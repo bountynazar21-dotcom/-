@@ -1,3 +1,4 @@
+# app/handlers/moves.py
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto
 from aiogram.filters import Command
@@ -30,7 +31,7 @@ STATUS_UA = {
     "canceled": "скасовано",
 }
 
-TELEGRAM_LIMIT = 3900  # запас під HTML
+TELEGRAM_LIMIT = 3900
 PM = "HTML"
 
 
@@ -84,7 +85,7 @@ async def _send_album_or_single(bot, uid: int, photos: list[str], caption: str, 
             media[0].caption = caption
             media[0].parse_mode = PM
             await bot.send_media_group(uid, media=media)
-            await bot.send_message(uid, "✅ Підтверди дію кнопками нижче:", reply_markup=kb)
+            await bot.send_message(uid, "✅ Підтверди дію кнопками нижче:", reply_markup=kb, parse_mode=PM)
         return True
     except Exception:
         return False
@@ -244,14 +245,16 @@ async def mv_photo_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+# ✅ нові + старі callback-и (backward compat)
 @router.callback_query(F.data.startswith("mv:photo_cancel_"))
+@router.callback_query(F.data.startswith("mv:photos_cancel_"))
 async def mv_photo_cancel(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     move_id = int(data.get("move_id") or cb.data.split("_")[-1])
     await state.clear()
 
     m = mv_repo.get_move(move_id)
-    await cb.message.answer("❌ Ок, додавання фото скасовано.")
+    await cb.message.answer("❌ Ок, додавання фото скасовано.", parse_mode=PM)
     if m:
         await cb.message.answer(move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
     await cb.answer()
@@ -261,7 +264,7 @@ async def mv_photo_cancel(cb: CallbackQuery, state: FSMContext):
 async def mv_photo_collect(message: Message, state: FSMContext):
     file_id = _extract_photo_file_id(message)
     if not file_id:
-        return await message.answer("⚠️ Надішли саме фото/картинку. Потім натисни ✅ Готово.")
+        return await message.answer("⚠️ Надішли саме фото/картинку. Потім натисни ✅ Готово.", parse_mode=PM)
 
     data = await state.get_data()
     photos: list[str] = data.get("photos", [])
@@ -293,7 +296,9 @@ async def mv_photo_collect(message: Message, state: FSMContext):
     )
 
 
+# ✅ нові + старі callback-и (backward compat)
 @router.callback_query(F.data.startswith("mv:photo_done_"))
+@router.callback_query(F.data.startswith("mv:photos_done_"))
 async def mv_photo_done(cb: CallbackQuery, state: FSMContext):
     move_id = int(cb.data.split("_")[-1])
     data = await state.get_data()
@@ -349,7 +354,11 @@ async def mv_note_finish(message: Message, state: FSMContext):
     await state.clear()
 
     m = mv_repo.get_move(move_id)
-    await message.answer("✅ Коментар оновлено.\n\n" + move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
+    await message.answer(
+        "✅ Коментар оновлено.\n\n" + move_text(m),
+        reply_markup=move_review_kb(move_id),
+        parse_mode=PM,
+    )
 
 
 # ---------- send / cancel / done ----------
@@ -382,7 +391,6 @@ async def mv_send(cb: CallbackQuery):
         )
         return
 
-    # беремо всі фото накладної (якщо є), інакше fallback на 1 фото з moves
     photos: list[str] = []
     try:
         v = m.get("invoice_version") or 1
@@ -495,4 +503,3 @@ async def cmd_info(message: Message):
     if not m:
         return await message.answer("Не знайдено.")
     await message.answer(move_text(m), parse_mode=PM)
-

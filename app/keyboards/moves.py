@@ -81,6 +81,7 @@ def mv_photos_done_kb(move_id: int) -> InlineKeyboardMarkup:
 
 
 
+
 # ---------- admin ----------
 def admin_moves_tabs_kb(active: bool = True) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
