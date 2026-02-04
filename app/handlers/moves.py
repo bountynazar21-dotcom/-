@@ -51,7 +51,6 @@ def split_text(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
 
 
 async def safe_edit(message, text: str, reply_markup=None):
-    """Гасимо 'message is not modified'."""
     try:
         await message.edit_text(text, reply_markup=reply_markup, parse_mode=PM)
     except TelegramBadRequest as e:
@@ -92,7 +91,10 @@ async def _send_album_or_single(bot, uid: int, photos: list[str], caption: str, 
 
 
 @router.callback_query(F.data == "mv:menu")
-async def mv_menu(cb: CallbackQuery):
+async def mv_menu(cb: CallbackQuery, state: FSMContext):
+    # щоб режим фото не зависав
+    if await state.get_state() == MoveStates.waiting_photos:
+        await state.clear()
     await safe_edit(cb.message, "📦 Меню переміщень:", reply_markup=moves_menu_kb())
     await cb.answer()
 
@@ -114,9 +116,8 @@ async def mv_list(cb: CallbackQuery):
         lines.append(f"• <b>#{m['id']}</b> ({st}) {fp} → {tp}")
 
     lines.append("\nКоманда: <code>/info ID</code>")
-    text = "\n".join(lines)
+    chunks = split_text("\n".join(lines))
 
-    chunks = split_text(text)
     await safe_edit(cb.message, chunks[0], reply_markup=moves_menu_kb())
     for extra in chunks[1:]:
         await cb.message.answer(extra, parse_mode=PM)
@@ -128,7 +129,6 @@ async def mv_list(cb: CallbackQuery):
 @router.callback_query(F.data == "mv:new")
 async def mv_new(cb: CallbackQuery, state: FSMContext):
     move_id = mv_repo.create_move(created_by=cb.from_user.id)
-
     try:
         mv_repo.set_operator(move_id, cb.from_user.id)
     except Exception:
@@ -173,17 +173,15 @@ async def mv_from_city(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(MoveStates.choosing_from_point, F.data.startswith("mv:from_point_"))
 async def mv_from_point(cb: CallbackQuery, state: FSMContext):
     point_id = int(cb.data.split("_")[-1])
-    data = await state.get_data()
-    move_id = int(data["move_id"])
+    move_id = int((await state.get_data())["move_id"])
 
     mv_repo.set_from_point(move_id, point_id)
 
-    cities = loc_repo.list_cities()
     await state.set_state(MoveStates.choosing_to_city)
     await safe_edit(
         cb.message,
         "Тепер вибери <b>місто (КУДИ)</b>:",
-        reply_markup=cities_kb(cities, "mv:to_city_", back_cb="mv:menu"),
+        reply_markup=cities_kb(loc_repo.list_cities(), "mv:to_city_", back_cb="mv:menu"),
     )
     await cb.answer()
 
@@ -210,8 +208,7 @@ async def mv_to_city(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(MoveStates.choosing_to_point, F.data.startswith("mv:to_point_"))
 async def mv_to_point(cb: CallbackQuery, state: FSMContext):
     point_id = int(cb.data.split("_")[-1])
-    data = await state.get_data()
-    move_id = int(data["move_id"])
+    move_id = int((await state.get_data())["move_id"])
 
     mv_repo.set_to_point(move_id, point_id)
 
@@ -230,26 +227,24 @@ async def mv_to_point(cb: CallbackQuery, state: FSMContext):
 async def mv_photo_start(cb: CallbackQuery, state: FSMContext):
     move_id = int(cb.data.split("_")[-1])
 
-    await state.update_data(move_id=move_id, photos=[], media_groups_seen=[])
+    await state.update_data(move_id=move_id, media_groups_seen=[])
     await state.set_state(MoveStates.waiting_photos)
 
+    v = mv_repo.get_invoice_version(move_id)
     text = (
-        f"📷 <b>Накладна для #{move_id}</b>\n\n"
-        "Можна скинути <b>1 фото</b> (воно одразу збережеться),\n"
-        "або <b>альбом</b> / кілька фото — тоді натисни ✅ <b>Готово</b>.\n\n"
+        f"📷 <b>Накладна для #{move_id}</b> (V{v})\n\n"
+        "Надсилай фото накладної (1…10 фото, по одному або альбомом).\n"
+        "Коли завершиш — натисни ✅ <b>Готово</b>.\n\n"
         "Якщо передумав — натисни ❌ <b>Скасувати</b>."
     )
-
     await safe_edit(cb.message, text, reply_markup=mv_photos_done_kb(move_id))
     await cb.answer()
 
 
-# ✅ cancel: нові + старі callback-и (backward compat)
 @router.callback_query(F.data.startswith("mv:photo_cancel_"))
 @router.callback_query(F.data.startswith("mv:photos_cancel_"))
 async def mv_photo_cancel(cb: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    move_id = int(data.get("move_id") or cb.data.split("_")[-1])
+    move_id = int((await state.get_data()).get("move_id") or cb.data.split("_")[-1])
     await state.clear()
 
     m = mv_repo.get_move(move_id)
@@ -261,116 +256,92 @@ async def mv_photo_cancel(cb: CallbackQuery, state: FSMContext):
 
 @router.message(MoveStates.waiting_photos)
 async def mv_photo_collect(message: Message, state: FSMContext):
+    """
+    Головний фікс: НЕ тримаємо список фото лише в state (бо альбоми можуть “змагатись” по апдейтах).
+    Джерело правди = БД:
+    - беремо поточний список фото з БД для цієї версії
+    - додаємо нове
+    - перезаписуємо (move_invoice_photos) одним махом
+    """
     file_id = _extract_photo_file_id(message)
     if not file_id:
-        return await message.answer("⚠️ Надішли саме фото/картинку.", parse_mode=PM)
+        return await message.answer("⚠️ Надішли саме фото/картинку. Потім натисни ✅ Готово.", parse_mode=PM)
 
     data = await state.get_data()
     move_id = int(data.get("move_id") or 0)
-    photos: list[str] = data.get("photos", [])
+    if not move_id:
+        await state.clear()
+        return await message.answer("⚠️ Не знайшов move_id. Зайди ще раз в 📷 Додати фото.", parse_mode=PM)
+
+    v = mv_repo.get_invoice_version(move_id)
+
+    # беремо вже збережені фото (щоб альбом/окремі не губились)
+    try:
+        current = mv_repo.list_invoice_photos(move_id, v)
+    except Exception:
+        current = []
+
+    if file_id not in current:
+        current.append(file_id)
+
+    # обмеження 10 фото
+    if len(current) > 10:
+        return await message.answer("⚠️ Максимум 10 фото для 1 накладної.", parse_mode=PM)
+
+    # пишемо в БД одразу
+    try:
+        mv_repo.set_photo(move_id, current[0])          # превʼю
+        mv_repo.add_invoice_photos(move_id, v, current) # всі фото
+    except Exception:
+        pass
+
     media_groups_seen: list[str] = data.get("media_groups_seen", [])
 
-    photos.append(file_id)
-    await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
-
-    # ✅ Якщо це АЛЬБОМ — збираємо, але не завершуємо автоматом
     if message.media_group_id:
         mg = str(message.media_group_id)
-
-        # відповідаємо 1 раз на альбом
+        # відповідаємо 1 раз на весь альбом
         if mg not in media_groups_seen:
             media_groups_seen.append(mg)
             await state.update_data(media_groups_seen=media_groups_seen)
             return await message.answer(
                 "📎 Альбом прийнято ✅\n"
-                "Коли всі фото довантажаться — натисни ✅ <b>Готово</b>.",
+                f"Фото в накладній: <b>{len(current)}</b>\n"
+                "Можеш додати ще або натиснути ✅ <b>Готово</b>.",
                 parse_mode=PM,
             )
         return
 
-    # ✅ Якщо ОДИНОЧНЕ фото — одразу зберігаємо як НАКЛАДНУ і виходимо (щоб не “чекав”)
-    try:
-        mv_repo.set_photo(move_id, photos[0])  # прев'ю
-        v = mv_repo.get_invoice_version(move_id)
-        mv_repo.add_invoice_photos(move_id, v, photos)  # тут буде 1 фото
-    except Exception:
-        pass
-
-    await state.clear()
-
-    m = mv_repo.get_move(move_id)
     await message.answer(
-        "✅ Накладну збережено (1 фото).\n"
-        "Якщо треба додати ще — натисни «📷 Додати / змінити фото» і кинь альбомом.",
+        f"✅ Додано фото: <b>{len(current)}</b>\n"
+        "Можеш додати ще або натиснути ✅ <b>Готово</b>.",
         parse_mode=PM,
     )
-    if m:
-        await message.answer(move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
 
 
 @router.callback_query(F.data.startswith("mv:photo_done_"))
 @router.callback_query(F.data.startswith("mv:photos_done_"))
 async def mv_photo_done(cb: CallbackQuery, state: FSMContext):
-    move_id = int(cb.data.split("_")[-1])
-    data = await state.get_data()
-    photos: list[str] = data.get("photos", [])
+    move_id = int((await state.get_data()).get("move_id") or cb.data.split("_")[-1])
+    v = mv_repo.get_invoice_version(move_id)
+
+    try:
+        photos = mv_repo.list_invoice_photos(move_id, v)
+    except Exception:
+        photos = []
 
     if not photos:
         await cb.answer("Спочатку додай хоча б 1 фото.", show_alert=True)
         return
 
-    # ✅ Тут якраз ОДИН раз “звітуємо” і зберігаємо ВСІ фото (для альбому)
-    try:
-        mv_repo.set_photo(move_id, photos[0])
-        v = mv_repo.get_invoice_version(move_id)
-        mv_repo.add_invoice_photos(move_id, v, photos)
-    except Exception:
-        pass
-
     await state.clear()
-
     m = mv_repo.get_move(move_id)
+
     await cb.message.answer(
-        f"✅ Накладну збережено: <b>{len(photos)}</b> фото\n\n" + move_text(m),
+        f"✅ Накладну збережено: <b>{len(photos)}</b> фото (V{v})\n\n" + move_text(m),
         reply_markup=move_review_kb(move_id),
         parse_mode=PM,
     )
     await cb.answer("Готово ✅", show_alert=True)
-
-
-
-# ---------- add note ----------
-@router.callback_query(F.data.startswith("mv:note_"))
-async def mv_note_start(cb: CallbackQuery, state: FSMContext):
-    move_id = int(cb.data.split("_")[-1])
-    await state.update_data(move_id=move_id)
-    await state.set_state(MoveStates.waiting_note)
-    await safe_edit(
-        cb.message,
-        f"📝 Напиши коментар для <b>#{move_id}</b>.\n\n"
-        f"Якщо без комента — напиши <code>-</code>."
-    )
-    await cb.answer()
-
-
-@router.message(MoveStates.waiting_note)
-async def mv_note_finish(message: Message, state: FSMContext):
-    data = await state.get_data()
-    move_id = int(data["move_id"])
-
-    txt = (message.text or "").strip()
-    if txt == "-":
-        txt = ""
-
-    mv_repo.set_note(move_id, txt)
-    await state.clear()
-
-    m = mv_repo.get_move(move_id)
-    await message.answer(
-        "✅ Коментар оновлено.\n\n" + move_text(m),
-        reply_markup=move_review_kb(move_id),
-        parse_mode=PM,
-    )
 
 
 # ---------- send / cancel / done ----------
@@ -386,11 +357,15 @@ async def mv_send(cb: CallbackQuery):
         await cb.answer("Немає маршруту (from/to).", show_alert=True)
         return
 
-    from_point_id = int(m["from_point_id"])
-    to_point_id = int(m["to_point_id"])
+    # 🔥 критично: перед кожною відправкою НОВОЇ накладної
+    # обнуляємо підтвердження, щоб не було “вже підтверджено”
+    try:
+        mv_repo.clear_hand_receive(move_id)
+    except Exception:
+        pass
 
-    from_users = auth_repo.get_point_users(from_point_id)
-    to_users = auth_repo.get_point_users(to_point_id)
+    from_users = auth_repo.get_point_users(int(m["from_point_id"]))
+    to_users = auth_repo.get_point_users(int(m["to_point_id"]))
 
     from_rec = [u["telegram_id"] for u in from_users if u.get("telegram_id")]
     to_rec = [u["telegram_id"] for u in to_users if u.get("telegram_id")]
@@ -403,42 +378,35 @@ async def mv_send(cb: CallbackQuery):
         )
         return
 
-    # беремо всі фото накладної (якщо є), інакше fallback на 1 фото з moves
-    photos: list[str] = []
+    # беремо фото поточної версії
+    v = int((m.get("invoice_version") or 1))
     try:
-        v = m.get("invoice_version") or 1
-        photos = mv_repo.list_invoice_photos(move_id, int(v))
+        photos = mv_repo.list_invoice_photos(move_id, v)
     except Exception:
         photos = []
 
     if not photos and m.get("photo_file_id"):
         photos = [m["photo_file_id"]]
 
-    mv_repo.set_status(move_id, "sent")
-    m = mv_repo.get_move(move_id)
+    if not photos:
+        await cb.answer("⚠️ Нема фото накладної. Додай фото перед відправкою.", show_alert=True)
+        return
 
-    version = m.get("invoice_version") or 1
-    caption = f"📣 <b>Переміщення #{move_id}</b> (V{version})\n\n" + move_text(m)
+    mv_repo.set_status(move_id, "sent")
+    m = mv_repo.get_move(move_id) or m
+
+    caption = f"📣 <b>Переміщення #{move_id}</b> (V{v})\n\n" + move_text(m)
 
     sent_from = 0
     sent_to = 0
 
     for uid in from_rec:
-        ok = await _send_album_or_single(cb.bot, uid, photos, caption, point_from_kb(move_id))
-        if ok:
+        if await _send_album_or_single(cb.bot, uid, photos, caption, point_from_kb(move_id)):
             sent_from += 1
 
     for uid in to_rec:
-        ok = await _send_album_or_single(cb.bot, uid, photos, caption, point_to_kb(move_id))
-        if ok:
+        if await _send_album_or_single(cb.bot, uid, photos, caption, point_to_kb(move_id)):
             sent_to += 1
-
-    if sent_from == 0 or sent_to == 0:
-        await cb.answer(
-            "⚠️ Частині людей не доставилось.\n"
-            "Перевір, чи вони натиснули /start у боті і не блокували його.",
-            show_alert=True
-        )
 
     operator_id = m.get("operator_id") or cb.from_user.id
     try:
@@ -489,7 +457,7 @@ async def mv_done(cb: CallbackQuery):
 async def cmd_moves(message: Message):
     items = mv_repo.list_moves(50)
     if not items:
-        return await message.answer("Поки переміщень нема.")
+        return await message.answer("Поки переміщень нема.", parse_mode=PM)
 
     lines = ["📋 <b>Останні переміщення:</b>"]
     for m in items:
@@ -500,9 +468,7 @@ async def cmd_moves(message: Message):
         lines.append(f"• <b>#{m['id']}</b> ({st}) {fp} → {tp}")
 
     lines.append("\nДетально: <code>/info ID</code>")
-    text = "\n".join(lines)
-
-    for chunk in split_text(text):
+    for chunk in split_text("\n".join(lines)):
         await message.answer(chunk, parse_mode=PM)
 
 
@@ -511,10 +477,8 @@ async def cmd_info(message: Message):
     parts = (message.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
         return await message.answer("Формат: <code>/info 123</code>", parse_mode=PM)
-
     move_id = int(parts[1])
     m = mv_repo.get_move(move_id)
     if not m:
-        return await message.answer("Не знайдено.")
-
+        return await message.answer("Не знайдено.", parse_mode=PM)
     await message.answer(move_text(m), parse_mode=PM)

@@ -87,26 +87,16 @@ def _admin_msg_correction(m: dict, point_name: str, user_id: int, note: str) -> 
     )
 
 
-def _already_msg(kind: str, m: dict) -> str:
-    """
-    kind: 'handed' | 'received'
-    Повертає людський текст, якщо вже підтверджено.
-    """
-    if kind == "handed":
-        who = m.get("handed_by") or "—"
-        when = m.get("handed_at") or "—"
-        return f"⚠️ Уже підтверджено\n👤 {who} • 🕒 {when}"
-    who = m.get("received_by") or "—"
-    when = m.get("received_at") or "—"
-    return f"⚠️ Уже підтверджено\n👤 {who} • 🕒 {when}"
-
-
 @router.callback_query(F.data.startswith("pt:handed_"))
 async def pt_handed(cb: CallbackQuery):
     move_id = int(cb.data.split("_")[-1])
     m = mv_repo.get_move(move_id)
     if not m:
         return await cb.answer("❌ Переміщення не знайдено", show_alert=True)
+
+    # підтвердження тільки коли реально відправлено оператором
+    if (m.get("status") or "").lower() != "sent":
+        return await cb.answer("⚠️ Ще не відправлено оператором", show_alert=True)
 
     my_point = _my_point_id(cb.from_user.id)
     if not my_point:
@@ -115,17 +105,10 @@ async def pt_handed(cb: CallbackQuery):
     if int(my_point) != int(m.get("from_point_id") or 0):
         return await cb.answer("⛔ Це не твоє переміщення (ти не відправник)", show_alert=True)
 
-    # ✅ якщо вже є handed_at — показуємо хто/коли
-    if m.get("handed_at"):
-        return await cb.answer(_already_msg("handed", m), show_alert=True)
-
     ok = mv_repo.mark_handed(move_id, cb.from_user.id)
     if not ok:
-        # ще раз дістанемо актуальне і покажемо хто/коли
-        m2 = mv_repo.get_move(move_id) or m
-        return await cb.answer(_already_msg("handed", m2), show_alert=True)
+        return await cb.answer("⚠️ Ви вже підтвердили", show_alert=True)
 
-    # UX: прибираємо кнопки підтвердження, лишаємо "Коригування"
     await _safe_edit_reply_markup(cb, _kb_only_correction(move_id))
 
     m = mv_repo.get_move(move_id) or m
@@ -137,13 +120,12 @@ async def pt_handed(cb: CallbackQuery):
         except Exception:
             pass
 
-    # якщо отримувач вже підтвердив — закриваємо
     if m.get("received_at"):
         mv_repo.set_status(move_id, "done")
-        m3 = mv_repo.get_move(move_id)
-        if op_id and m3:
+        m2 = mv_repo.get_move(move_id)
+        if op_id and m2:
             try:
-                await cb.bot.send_message(op_id, _admin_msg_closed(m3), parse_mode=PM)
+                await cb.bot.send_message(op_id, _admin_msg_closed(m2), parse_mode=PM)
             except Exception:
                 pass
 
@@ -157,6 +139,9 @@ async def pt_received(cb: CallbackQuery):
     if not m:
         return await cb.answer("❌ Переміщення не знайдено", show_alert=True)
 
+    if (m.get("status") or "").lower() != "sent":
+        return await cb.answer("⚠️ Ще не відправлено оператором", show_alert=True)
+
     my_point = _my_point_id(cb.from_user.id)
     if not my_point:
         return await cb.answer("❗ Ти не прив’язаний до ТТ", show_alert=True)
@@ -164,16 +149,10 @@ async def pt_received(cb: CallbackQuery):
     if int(my_point) != int(m.get("to_point_id") or 0):
         return await cb.answer("⛔ Це не твоє переміщення (ти не отримувач)", show_alert=True)
 
-    # ✅ якщо вже є received_at — показуємо хто/коли
-    if m.get("received_at"):
-        return await cb.answer(_already_msg("received", m), show_alert=True)
-
     ok = mv_repo.mark_received(move_id, cb.from_user.id)
     if not ok:
-        m2 = mv_repo.get_move(move_id) or m
-        return await cb.answer(_already_msg("received", m2), show_alert=True)
+        return await cb.answer("⚠️ Ви вже підтвердили", show_alert=True)
 
-    # UX: прибираємо кнопку підтвердження, лишаємо "Коригування"
     await _safe_edit_reply_markup(cb, _kb_only_correction(move_id))
 
     m = mv_repo.get_move(move_id) or m
@@ -185,13 +164,12 @@ async def pt_received(cb: CallbackQuery):
         except Exception:
             pass
 
-    # якщо відправник вже підтвердив — закриваємо
     if m.get("handed_at"):
         mv_repo.set_status(move_id, "done")
-        m3 = mv_repo.get_move(move_id)
-        if op_id and m3:
+        m2 = mv_repo.get_move(move_id)
+        if op_id and m2:
             try:
-                await cb.bot.send_message(op_id, _admin_msg_closed(m3), parse_mode=PM)
+                await cb.bot.send_message(op_id, _admin_msg_closed(m2), parse_mode=PM)
             except Exception:
                 pass
 
