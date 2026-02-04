@@ -42,6 +42,7 @@ def move_actions_kb(move_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+# ---- keyboards for точки ----
 def point_from_kb(move_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Віддав", callback_data=f"pt:handed_{move_id}")],
@@ -56,22 +57,28 @@ def point_to_kb(move_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-# ✅ MULTI-PHOTO ДЛЯ СТВОРЕННЯ ПЕРЕМІЩЕННЯ
+# ✅ OPTIONAL UX: коли вже підтвердили, можна показати "засірені" кнопки (працюють як алерт)
+def point_from_confirmed_kb(move_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Віддав (вже підтверджено)", callback_data=f"pt:handed_{move_id}")],
+        [InlineKeyboardButton(text="⚠️ Коригування", callback_data=f"pt:corr_{move_id}")],
+    ])
+
+
+def point_to_confirmed_kb(move_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Отримав (вже підтверджено)", callback_data=f"pt:received_{move_id}")],
+        [InlineKeyboardButton(text="⚠️ Коригування", callback_data=f"pt:corr_{move_id}")],
+    ])
+
+
+# ✅ MULTI-PHOTO ДЛЯ СТВОРЕННЯ / ДОДАВАННЯ ФОТО
 def mv_photos_done_kb(move_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="✅ Готово",
-                callback_data=f"mv:photos_done_{move_id}"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="❌ Скасувати",
-                callback_data=f"mv:photos_cancel_{move_id}"
-            )
-        ],
+        [InlineKeyboardButton(text="✅ Готово", callback_data=f"mv:photo_done_{move_id}")],
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data=f"mv:photo_cancel_{move_id}")],
     ])
+
 
 
 # ---------- admin ----------
@@ -114,16 +121,7 @@ def admin_move_actions_kb(move_id: int, back_cb: str = "mva:active") -> InlineKe
 # ✅ MULTI-PHOTO REINVOICE
 def reinvoice_done_kb(move_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="✅ Готово",
-                callback_data=f"mva:reinvoice_done_{move_id}"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="❌ Скасувати",
-                callback_data=f"mva:reinvoice_cancel_{move_id}"
-            )
-        ],
+        [InlineKeyboardButton(text="✅ Готово", callback_data=f"mva:reinvoice_done_{move_id}")],
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data=f"mva:reinvoice_cancel_{move_id}")],
     ])
+
