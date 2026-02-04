@@ -8,7 +8,6 @@ from aiogram.client.default import DefaultBotProperties
 
 from .logger import setup_logging
 from .config import load_config
-
 from .db.pg_schema import ensure_schema
 
 from .handlers.start import router as start_router
@@ -39,16 +38,32 @@ async def main() -> None:
     )
 
     dp = Dispatcher()
-    dp.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
-    dp.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
 
+    # ✅ ПУБЛІЧНІ РОУТЕРИ (для всіх)
     dp.include_router(start_router)
+    dp.include_router(auth_router)
+    dp.include_router(point_profile_router)
+    dp.include_router(point_moves_router)   # ✅ Віддав/Отримав/Коригування для ТТ
+
+    # ✅ АДМІН РОУТЕРИ (тільки для адмінів)
+    locations_router.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
+    locations_router.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
+
+    moves_router.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
+    moves_router.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
+
+    point_users_router.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
+    point_users_router.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
+
+    moves_admin_router.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
+    moves_admin_router.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
+
+    reinvoice_router.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
+    reinvoice_router.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
+
     dp.include_router(locations_router)
     dp.include_router(moves_router)
     dp.include_router(point_users_router)
-    dp.include_router(auth_router)
-    dp.include_router(point_profile_router)
-    dp.include_router(point_moves_router)
     dp.include_router(moves_admin_router)
     dp.include_router(reinvoice_router)
 
@@ -60,3 +75,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
