@@ -18,6 +18,8 @@ from ..keyboards.moves import (
 from ..utils.text import move_text
 
 router = Router()
+PM = "HTML"
+MAX_PHOTOS = 10
 
 
 # ---------- FSM (тільки для збору фото) ----------
@@ -34,12 +36,9 @@ def _extract_photo_file_id(message: Message) -> str | None:
 
 
 async def safe_edit(cb: CallbackQuery, text: str, reply_markup=None):
-    """
-    Telegram не дозволяє edit_text якщо контент/клава не змінились.
-    Цей хелпер гасить "message is not modified" і не валить бота.
-    """
+    """Гасимо 'message is not modified' + ставимо HTML."""
     try:
-        await cb.message.edit_text(text, reply_markup=reply_markup)
+        await cb.message.edit_text(text, reply_markup=reply_markup, parse_mode=PM)
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
             await cb.answer()
@@ -58,9 +57,7 @@ def _uniq(ids: list[int]) -> list[int]:
 
 
 def _participants_ids(m: dict) -> list[int]:
-    """
-    Учасники = всі люди прив’язані до ТТ-відправника + ТТ-отримувача
-    """
+    """Учасники = всі люди прив’язані до ТТ-відправника + ТТ-отримувача"""
     from_pid = m.get("from_point_id")
     to_pid = m.get("to_point_id")
 
@@ -74,59 +71,56 @@ def _participants_ids(m: dict) -> list[int]:
 
 
 async def _send_album_or_single_to_me(cb: CallbackQuery, photos: list[str], caption: str) -> None:
-    """
-    Адміну/оператору шлемо:
-    - 1 фото: send_photo(caption)
-    - 2+ фото: send_media_group з caption тільки на першому
-    """
+    """Оператору/адміну: 1 фото -> send_photo, 2+ -> send_media_group"""
     if not photos:
-        await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Фото відсутні.")
+        await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Фото відсутні.", parse_mode=PM)
         return
 
     if len(photos) == 1:
         try:
-            await cb.bot.send_photo(cb.from_user.id, photo=photos[0], caption=caption)
+            await cb.bot.send_photo(cb.from_user.id, photo=photos[0], caption=caption, parse_mode=PM)
         except Exception:
-            await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Не зміг надіслати фото.")
+            await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Не зміг надіслати фото.", parse_mode=PM)
         return
 
     try:
         media = [InputMediaPhoto(media=fid) for fid in photos]
         media[0].caption = caption
-        media[0].parse_mode = "HTML"
+        media[0].parse_mode = PM
         await cb.bot.send_media_group(cb.from_user.id, media=media)
     except Exception:
-        # fallback: якщо з якихось причин медіагрупа не шлеться — шлемо по одному
+        # fallback: якщо альбом не летить — по одному
         for fid in photos:
             try:
-                await cb.bot.send_photo(cb.from_user.id, photo=fid, caption=None)
+                await cb.bot.send_photo(cb.from_user.id, photo=fid, parse_mode=PM)
             except Exception:
                 pass
-        await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Альбом не відправився, відправив як вийшло.")
+        await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Альбом не відправився, відправив як вийшло.", parse_mode=PM)
 
 
 async def _send_album_or_single_to_tt(bot, uid: int, photos: list[str], caption: str, kb):
     """
     На ТТ:
     - 1 фото: send_photo з kb
-    - 2+: send_media_group + окреме повідомлення з kb (1 раз)
+    - 2+: send_media_group + ОДНЕ окреме повідомлення з kb
     """
     if not photos:
         return False
     try:
         if len(photos) == 1:
-            await bot.send_photo(uid, photo=photos[0], caption=caption, reply_markup=kb)
+            await bot.send_photo(uid, photo=photos[0], caption=caption, reply_markup=kb, parse_mode=PM)
         else:
             media = [InputMediaPhoto(media=fid) for fid in photos]
             media[0].caption = caption
-            media[0].parse_mode = "HTML"
+            media[0].parse_mode = PM
             await bot.send_media_group(uid, media=media)
-            await bot.send_message(uid, "✅ Підтверди дію кнопками нижче:", reply_markup=kb)
+            await bot.send_message(uid, "✅ Підтверди дію кнопками нижче:", reply_markup=kb, parse_mode=PM)
         return True
     except Exception:
         return False
 
 
+# -------------------- LIST / VIEW --------------------
 @router.callback_query(F.data == "mva:list")
 async def mva_list(cb: CallbackQuery):
     await mva_active(cb)
@@ -190,7 +184,7 @@ async def mva_docs(cb: CallbackQuery):
         await cb.answer("Не знайдено.", show_alert=True)
         return
 
-    # 1) Дістаємо всі версії (V1/V2/V3...)
+    # 1) всі версії
     try:
         invoices = mv_repo.list_invoices(move_id)
     except Exception:
@@ -200,7 +194,7 @@ async def mva_docs(cb: CallbackQuery):
         current_v = m.get("invoice_version") or 1
         invoices = [{"version": current_v, "photo_file_id": m.get("photo_file_id")}]
 
-    # 2) Для кожної версії пробуємо витягнути multi-photo
+    # 2) для кожної версії — multi-photo
     sent_any = False
     for inv in invoices:
         v = int(inv.get("version") or 1)
@@ -221,24 +215,7 @@ async def mva_docs(cb: CallbackQuery):
         sent_any = True
 
     if not sent_any:
-        await cb.bot.send_message(cb.from_user.id, f"🆔 ID: <b>{move_id}</b>\n\n" + move_text(m) + "\n\n⚠️ Накладних не знайдено.")
-
-    # 3) Коригування — окремо (як було)
-    if (m.get("correction_status") or "none") != "none":
-        caption_corr = (
-            f"⚠️ <b>Коригування</b>\n🆔 ID: <b>{move_id}</b>\n"
-            f"Статус: <b>{m.get('correction_status')}</b>\n"
-        )
-        if (m.get("correction_note") or "").strip():
-            caption_corr += f"Коментар: {m.get('correction_note')}\n"
-
-        if m.get("correction_photo_file_id"):
-            try:
-                await cb.bot.send_photo(cb.from_user.id, photo=m["correction_photo_file_id"], caption=caption_corr)
-            except Exception:
-                await cb.bot.send_message(cb.from_user.id, caption_corr + "\n⚠️ Не зміг надіслати фото коригування.")
-        else:
-            await cb.bot.send_message(cb.from_user.id, caption_corr + "\n⚠️ Фото коригування відсутнє.")
+        await cb.bot.send_message(cb.from_user.id, f"🆔 ID: <b>{move_id}</b>\n\n" + move_text(m) + "\n\n⚠️ Накладних не знайдено.", parse_mode=PM)
 
     await cb.answer("📄 Накладні відправив у чат", show_alert=True)
 
@@ -265,7 +242,7 @@ async def mva_close(cb: CallbackQuery):
     delivered = 0
     for uid in participants:
         try:
-            await cb.bot.send_message(uid, msg)
+            await cb.bot.send_message(uid, msg, parse_mode=PM)
             delivered += 1
         except Exception:
             pass
@@ -273,7 +250,7 @@ async def mva_close(cb: CallbackQuery):
     op_id = m.get("operator_id") or m.get("created_by")
     if op_id:
         try:
-            await cb.bot.send_message(op_id, msg + f"\n📨 Повідомлень доставлено учасникам: <b>{delivered}</b>")
+            await cb.bot.send_message(op_id, msg + f"\n📨 Доставлено: <b>{delivered}</b>", parse_mode=PM)
         except Exception:
             pass
 
@@ -285,7 +262,8 @@ async def mva_close(cb: CallbackQuery):
 # ✅ REINVOICE FLOW: оператор збирає фото (FSM) -> V+1 -> альбом на ТТ
 # -------------------------------------------------------------------
 
-@router.callback_query(F.data.startswith("mva:reinvoice_"))
+# ❗ ВАЖЛИВО: ловимо ТІЛЬКИ mva:reinvoice_<digits>, щоб не конфліктувало з done/cancel
+@router.callback_query(F.data.regexp(r"^mva:reinvoice_\d+$"))
 async def mva_reinvoice_start(cb: CallbackQuery, state: FSMContext):
     move_id = int(cb.data.split("_")[-1])
     m = mv_repo.get_move(move_id)
@@ -298,11 +276,11 @@ async def mva_reinvoice_start(cb: CallbackQuery, state: FSMContext):
 
     text = (
         f"↪️ <b>Нова накладна для переміщення #{move_id}</b>\n\n"
-        "Надсилай фото накладної (можна багато, хоч по одному, хоч альбомом).\n"
+        f"Надсилай фото накладної (1–{MAX_PHOTOS}). Можна по одному або альбомом.\n"
         "Коли завершиш — натисни ✅ <b>Готово</b>.\n\n"
         "Якщо передумав — натисни ❌ <b>Скасувати</b>."
     )
-    await cb.message.answer(text, reply_markup=reinvoice_done_kb(move_id))
+    await cb.message.answer(text, reply_markup=reinvoice_done_kb(move_id), parse_mode=PM)
     await cb.answer()
 
 
@@ -315,10 +293,11 @@ async def mva_reinvoice_cancel(cb: CallbackQuery, state: FSMContext):
     m = mv_repo.get_move(move_id)
     if m:
         back_cb = "mva:active" if (m.get("status") not in ("done", "canceled")) else "mva:closed"
-        await cb.message.answer("❌ Ок, реінвойс скасовано.")
+        await cb.message.answer("❌ Ок, реінвойс скасовано.", parse_mode=PM)
         await cb.message.answer(
             "📦 <b>Переміщення</b>\n\n" + move_text(m),
             reply_markup=admin_move_actions_kb(move_id, back_cb=back_cb),
+            parse_mode=PM,
         )
     await cb.answer()
 
@@ -327,33 +306,35 @@ async def mva_reinvoice_cancel(cb: CallbackQuery, state: FSMContext):
 async def mva_reinvoice_collect(message: Message, state: FSMContext):
     file_id = _extract_photo_file_id(message)
     if not file_id:
-        return await message.answer("⚠️ Надішли саме фото/картинку. Потім натисни ✅ Готово.")
+        return await message.answer("⚠️ Надішли саме фото/картинку. Потім натисни ✅ <b>Готово</b>.", parse_mode=PM)
 
     data = await state.get_data()
     photos: list[str] = data.get("photos", [])
-    photos.append(file_id)
-
     media_groups_seen: list[str] = data.get("media_groups_seen", [])
 
-    # альбом: не спамимо — відповідаємо 1 раз
+    if len(photos) >= MAX_PHOTOS:
+        return await message.answer(f"⚠️ Ліміт {MAX_PHOTOS} фото. Натисни ✅ <b>Готово</b>.", parse_mode=PM)
+
+    photos.append(file_id)
+
+    # альбом: відповідаємо 1 раз на media_group_id
     if message.media_group_id:
         mg = str(message.media_group_id)
-
-        # зберігаємо фото завжди
-        await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
 
         if mg not in media_groups_seen:
             media_groups_seen.append(mg)
             await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
             return await message.answer(
-                "📎 Альбом прийнято ✅\n"
-                f"Фото в накладній: <b>{len(photos)}</b>\n"
-                "Можеш додати ще або натиснути ✅ <b>Готово</b>."
+                f"📎 Альбом прийнято ✅\nФото в накладній: <b>{len(photos)}</b>\n"
+                "Можеш додати ще або натиснути ✅ <b>Готово</b>.",
+                parse_mode=PM,
             )
+
+        await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
         return
 
     await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
-    await message.answer(f"✅ Додано фото: <b>{len(photos)}</b>\nНатисни ✅ Готово коли завершиш.")
+    await message.answer(f"✅ Додано фото: <b>{len(photos)}</b>\nНатисни ✅ <b>Готово</b> коли завершиш.", parse_mode=PM)
 
 
 @router.callback_query(F.data.startswith("mva:reinvoice_done_"))
@@ -374,16 +355,16 @@ async def mva_reinvoice_done(cb: CallbackQuery, state: FSMContext):
     mv_repo.bump_invoice_version(move_id)
     v = mv_repo.get_invoice_version(move_id)
 
-    # 2) зберігаємо multi-photo для цієї версії + прев'ю
+    # 2) зберігаємо multi-photo для цієї версії + прев'ю в moves.photo_file_id
     mv_repo.add_invoice_photos(move_id, v, photos)
     mv_repo.set_photo(move_id, photos[0])
 
-    # 3) скид підтверджень + закриття коригування
+    # 3) ❗ скидаємо підтвердження, щоб ТТ могли натиснути знов
     mv_repo.reset_for_reinvoice(move_id)
 
     m2 = mv_repo.get_move(move_id) or m
 
-    # 4) відправляємо на ТТ: один альбом + один комплект кнопок
+    # 4) відправляємо на ТТ
     from_pid = m2.get("from_point_id")
     to_pid = m2.get("to_point_id")
     if not from_pid or not to_pid:
@@ -421,11 +402,12 @@ async def mva_reinvoice_done(cb: CallbackQuery, state: FSMContext):
             f"📤 Відправник доставлено: <b>{sent_from}</b>\n"
             f"📥 Отримувач доставлено: <b>{sent_to}</b>\n\n"
             + move_text(m2),
+            parse_mode=PM,
         )
     except Exception:
         pass
 
-    # 6) повертаємо у картку переміщення
+    # 6) повертаємось у картку переміщення
     back_cb = "mva:active" if (m2.get("status") not in ("done", "canceled")) else "mva:closed"
     await safe_edit(
         cb,
@@ -433,5 +415,4 @@ async def mva_reinvoice_done(cb: CallbackQuery, state: FSMContext):
         reply_markup=admin_move_actions_kb(move_id, back_cb=back_cb),
     )
     await cb.answer("✅ Надіслано нову накладну", show_alert=True)
-
 
