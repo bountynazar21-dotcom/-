@@ -231,12 +231,16 @@ async def mv_to_point(cb: CallbackQuery, state: FSMContext):
 async def mv_photo_start(cb: CallbackQuery, state: FSMContext):
     move_id = int(cb.data.split("_")[-1])
 
-    await state.update_data(move_id=move_id, photos=[], media_groups_seen=[])
+    await state.update_data(
+        move_id=move_id,
+        photos=[],
+        progress_msg_id=None,  # одне повідомлення-лічильник (щоб не спамити)
+    )
     await state.set_state(MoveStates.waiting_photos)
 
     text = (
         f"📷 <b>Накладна для #{move_id}</b>\n\n"
-        "Надсилай фото накладної (можна багато, хоч по одному, хоч альбомом).\n"
+        "Надсилай фото накладної (можна 1 або багато, хоч по одному, хоч альбомом).\n"
         "Коли завершиш — натисни ✅ <b>Готово</b>.\n\n"
         "Якщо передумав — натисни ❌ <b>Скасувати</b>."
     )
@@ -245,7 +249,7 @@ async def mv_photo_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-# ✅ нові + старі callback-и (backward compat)
+# ✅ new + old callback (backward compat)
 @router.callback_query(F.data.startswith("mv:photo_cancel_"))
 @router.callback_query(F.data.startswith("mv:photos_cancel_"))
 async def mv_photo_cancel(cb: CallbackQuery, state: FSMContext):
@@ -264,45 +268,53 @@ async def mv_photo_cancel(cb: CallbackQuery, state: FSMContext):
 async def mv_photo_collect(message: Message, state: FSMContext):
     file_id = _extract_photo_file_id(message)
     if not file_id:
-        return await message.answer("⚠️ Надішли саме фото/картинку. Потім натисни ✅ Готово.", parse_mode=PM)
+        return await message.answer(
+            "⚠️ Надішли саме фото/картинку. Потім натисни ✅ <b>Готово</b>.",
+            parse_mode=PM,
+        )
 
     data = await state.get_data()
     photos: list[str] = data.get("photos", [])
     photos.append(file_id)
 
-    media_groups_seen: list[str] = data.get("media_groups_seen", [])
+    progress_msg_id = data.get("progress_msg_id")
+    await state.update_data(photos=photos)
 
-    # альбом: відповідаємо 1 раз
-    if message.media_group_id:
-        mg = str(message.media_group_id)
-        await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
+    text = f"✅ Прийнято фото: <b>{len(photos)}</b>\nНатисни ✅ <b>Готово</b>, коли завершиш."
 
-        if mg not in media_groups_seen:
-            media_groups_seen.append(mg)
-            await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
-            return await message.answer(
-                "📎 Альбом прийнято ✅\n"
-                f"Фото в накладній: <b>{len(photos)}</b>\n"
-                "Можеш додати ще або натиснути ✅ <b>Готово</b>.",
-                parse_mode=PM,
-            )
+    # перше фото — створюємо повідомлення-лічильник
+    if not progress_msg_id:
+        sent = await message.answer(text, parse_mode=PM)
+        await state.update_data(progress_msg_id=sent.message_id)
         return
 
-    await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
-    await message.answer(
-        f"✅ Додано фото: <b>{len(photos)}</b>\n"
-        "Натисни ✅ Готово коли завершиш.",
-        parse_mode=PM,
-    )
+    # наступні фото — редагуємо той самий лічильник
+    try:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=int(progress_msg_id),
+            text=text,
+            parse_mode=PM,
+        )
+    except TelegramBadRequest as e:
+        s = str(e)
+        if "message is not modified" in s:
+            return
+        if "message to edit not found" in s:
+            sent = await message.answer(text, parse_mode=PM)
+            await state.update_data(progress_msg_id=sent.message_id)
+            return
+        raise
 
 
-# ✅ нові + старі callback-и (backward compat)
+# ✅ new + old callback (backward compat)
 @router.callback_query(F.data.startswith("mv:photo_done_"))
 @router.callback_query(F.data.startswith("mv:photos_done_"))
 async def mv_photo_done(cb: CallbackQuery, state: FSMContext):
     move_id = int(cb.data.split("_")[-1])
     data = await state.get_data()
     photos: list[str] = data.get("photos", [])
+    progress_msg_id = data.get("progress_msg_id")
 
     if not photos:
         await cb.answer("Спочатку додай хоча б 1 фото.", show_alert=True)
@@ -315,6 +327,18 @@ async def mv_photo_done(cb: CallbackQuery, state: FSMContext):
         mv_repo.add_invoice_photos(move_id, v, photos)
     except Exception:
         pass
+
+    # підчистимо лічильник (не обов'язково, але приємно)
+    if progress_msg_id:
+        try:
+            await cb.bot.edit_message_text(
+                chat_id=cb.message.chat.id,
+                message_id=int(progress_msg_id),
+                text=f"✅ Фото зафіксовано: <b>{len(photos)}</b>",
+                parse_mode=PM,
+            )
+        except Exception:
+            pass
 
     await state.clear()
 
@@ -393,7 +417,7 @@ async def mv_send(cb: CallbackQuery):
 
     photos: list[str] = []
     try:
-        v = m.get("invoice_version") or 1
+        v = int(m.get("invoice_version") or 1)
         photos = mv_repo.list_invoice_photos(move_id, v)
     except Exception:
         photos = []
@@ -498,6 +522,7 @@ async def cmd_info(message: Message):
     parts = (message.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
         return await message.answer("Формат: <code>/info 123</code>", parse_mode=PM)
+
     move_id = int(parts[1])
     m = mv_repo.get_move(move_id)
     if not m:
