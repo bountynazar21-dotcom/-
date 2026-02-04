@@ -261,11 +261,6 @@ async def mv_photo_cancel(cb: CallbackQuery, state: FSMContext):
 
 @router.message(MoveStates.waiting_photos)
 async def mv_photo_collect(message: Message, state: FSMContext):
-    """
-    Логіка:
-    - 1 фото (НЕ альбом) -> зберігаємо одразу і виходимо зі стану (не чекаємо "Готово")
-    - альбом / кілька фото -> збираємо, "Готово" завершує
-    """
     file_id = _extract_photo_file_id(message)
     if not file_id:
         return await message.answer("⚠️ Надішли саме фото/картинку.", parse_mode=PM)
@@ -276,43 +271,43 @@ async def mv_photo_collect(message: Message, state: FSMContext):
     media_groups_seen: list[str] = data.get("media_groups_seen", [])
 
     photos.append(file_id)
+    await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
 
-    # --- якщо це альбом ---
+    # ✅ Якщо це АЛЬБОМ — збираємо, але не завершуємо автоматом
     if message.media_group_id:
         mg = str(message.media_group_id)
-        await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
 
+        # відповідаємо 1 раз на альбом
         if mg not in media_groups_seen:
             media_groups_seen.append(mg)
-            await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
+            await state.update_data(media_groups_seen=media_groups_seen)
             return await message.answer(
                 "📎 Альбом прийнято ✅\n"
-                f"Фото в накладній: <b>{len(photos)}</b>\n"
-                "Додай ще або натисни ✅ <b>Готово</b>.",
+                "Коли всі фото довантажаться — натисни ✅ <b>Готово</b>.",
                 parse_mode=PM,
             )
         return
 
-    # --- одиночне фото: зберігаємо одразу і НЕ чекаємо кнопки ---
+    # ✅ Якщо ОДИНОЧНЕ фото — одразу зберігаємо як НАКЛАДНУ і виходимо (щоб не “чекав”)
     try:
-        mv_repo.set_photo(move_id, photos[0])
+        mv_repo.set_photo(move_id, photos[0])  # прев'ю
         v = mv_repo.get_invoice_version(move_id)
-        mv_repo.add_invoice_photos(move_id, v, photos)
+        mv_repo.add_invoice_photos(move_id, v, photos)  # тут буде 1 фото
     except Exception:
-        # навіть якщо історія впала, одне фото все одно у moves.photo_file_id
         pass
 
     await state.clear()
-    m = mv_repo.get_move(move_id)
 
+    m = mv_repo.get_move(move_id)
     await message.answer(
-        "✅ Фото збережено (1 шт). Можеш одразу відправляти на ТТ.\n\n" + move_text(m),
-        reply_markup=move_review_kb(move_id),
+        "✅ Накладну збережено (1 фото).\n"
+        "Якщо треба додати ще — натисни «📷 Додати / змінити фото» і кинь альбомом.",
         parse_mode=PM,
     )
+    if m:
+        await message.answer(move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
 
 
-# ✅ done: нові + старі callback-и (backward compat)
 @router.callback_query(F.data.startswith("mv:photo_done_"))
 @router.callback_query(F.data.startswith("mv:photos_done_"))
 async def mv_photo_done(cb: CallbackQuery, state: FSMContext):
@@ -324,7 +319,7 @@ async def mv_photo_done(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Спочатку додай хоча б 1 фото.", show_alert=True)
         return
 
-    # зберігаємо прев'ю + всю пачку як поточну версію
+    # ✅ Тут якраз ОДИН раз “звітуємо” і зберігаємо ВСІ фото (для альбому)
     try:
         mv_repo.set_photo(move_id, photos[0])
         v = mv_repo.get_invoice_version(move_id)
@@ -336,11 +331,12 @@ async def mv_photo_done(cb: CallbackQuery, state: FSMContext):
 
     m = mv_repo.get_move(move_id)
     await cb.message.answer(
-        f"✅ Фото збережено: <b>{len(photos)}</b>\n\n" + move_text(m),
+        f"✅ Накладну збережено: <b>{len(photos)}</b> фото\n\n" + move_text(m),
         reply_markup=move_review_kb(move_id),
         parse_mode=PM,
     )
     await cb.answer("Готово ✅", show_alert=True)
+
 
 
 # ---------- add note ----------

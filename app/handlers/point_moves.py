@@ -36,7 +36,6 @@ async def _safe_edit_reply_markup(cb: CallbackQuery, reply_markup: InlineKeyboar
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
             return
-        # якщо це повідомлення з медіа-групи або його вже не можна редагувати
         return
     except Exception:
         return
@@ -88,6 +87,20 @@ def _admin_msg_correction(m: dict, point_name: str, user_id: int, note: str) -> 
     )
 
 
+def _already_msg(kind: str, m: dict) -> str:
+    """
+    kind: 'handed' | 'received'
+    Повертає людський текст, якщо вже підтверджено.
+    """
+    if kind == "handed":
+        who = m.get("handed_by") or "—"
+        when = m.get("handed_at") or "—"
+        return f"⚠️ Уже підтверджено\n👤 {who} • 🕒 {when}"
+    who = m.get("received_by") or "—"
+    when = m.get("received_at") or "—"
+    return f"⚠️ Уже підтверджено\n👤 {who} • 🕒 {when}"
+
+
 @router.callback_query(F.data.startswith("pt:handed_"))
 async def pt_handed(cb: CallbackQuery):
     move_id = int(cb.data.split("_")[-1])
@@ -102,11 +115,17 @@ async def pt_handed(cb: CallbackQuery):
     if int(my_point) != int(m.get("from_point_id") or 0):
         return await cb.answer("⛔ Це не твоє переміщення (ти не відправник)", show_alert=True)
 
+    # ✅ якщо вже є handed_at — показуємо хто/коли
+    if m.get("handed_at"):
+        return await cb.answer(_already_msg("handed", m), show_alert=True)
+
     ok = mv_repo.mark_handed(move_id, cb.from_user.id)
     if not ok:
-        return await cb.answer("⚠️ Ви вже підтвердили", show_alert=True)
+        # ще раз дістанемо актуальне і покажемо хто/коли
+        m2 = mv_repo.get_move(move_id) or m
+        return await cb.answer(_already_msg("handed", m2), show_alert=True)
 
-    # UX: знімаємо кнопку "Віддав", лишаємо "Коригування"
+    # UX: прибираємо кнопки підтвердження, лишаємо "Коригування"
     await _safe_edit_reply_markup(cb, _kb_only_correction(move_id))
 
     m = mv_repo.get_move(move_id) or m
@@ -118,12 +137,13 @@ async def pt_handed(cb: CallbackQuery):
         except Exception:
             pass
 
+    # якщо отримувач вже підтвердив — закриваємо
     if m.get("received_at"):
         mv_repo.set_status(move_id, "done")
-        m2 = mv_repo.get_move(move_id)
-        if op_id and m2:
+        m3 = mv_repo.get_move(move_id)
+        if op_id and m3:
             try:
-                await cb.bot.send_message(op_id, _admin_msg_closed(m2), parse_mode=PM)
+                await cb.bot.send_message(op_id, _admin_msg_closed(m3), parse_mode=PM)
             except Exception:
                 pass
 
@@ -144,11 +164,16 @@ async def pt_received(cb: CallbackQuery):
     if int(my_point) != int(m.get("to_point_id") or 0):
         return await cb.answer("⛔ Це не твоє переміщення (ти не отримувач)", show_alert=True)
 
+    # ✅ якщо вже є received_at — показуємо хто/коли
+    if m.get("received_at"):
+        return await cb.answer(_already_msg("received", m), show_alert=True)
+
     ok = mv_repo.mark_received(move_id, cb.from_user.id)
     if not ok:
-        return await cb.answer("⚠️ Ви вже підтвердили", show_alert=True)
+        m2 = mv_repo.get_move(move_id) or m
+        return await cb.answer(_already_msg("received", m2), show_alert=True)
 
-    # UX: знімаємо кнопку "Отримав", лишаємо "Коригування"
+    # UX: прибираємо кнопку підтвердження, лишаємо "Коригування"
     await _safe_edit_reply_markup(cb, _kb_only_correction(move_id))
 
     m = mv_repo.get_move(move_id) or m
@@ -160,12 +185,13 @@ async def pt_received(cb: CallbackQuery):
         except Exception:
             pass
 
+    # якщо відправник вже підтвердив — закриваємо
     if m.get("handed_at"):
         mv_repo.set_status(move_id, "done")
-        m2 = mv_repo.get_move(move_id)
-        if op_id and m2:
+        m3 = mv_repo.get_move(move_id)
+        if op_id and m3:
             try:
-                await cb.bot.send_message(op_id, _admin_msg_closed(m2), parse_mode=PM)
+                await cb.bot.send_message(op_id, _admin_msg_closed(m3), parse_mode=PM)
             except Exception:
                 pass
 
@@ -201,7 +227,7 @@ async def pt_corr_start(cb: CallbackQuery, state: FSMContext):
 async def pt_corr_note(message: Message, state: FSMContext):
     note = (message.text or "").strip()
     if not note:
-        return await message.answer("Напиши текстом, що саме не так.")
+        return await message.answer("Напиши текстом, що саме не так.", parse_mode=PM)
 
     await state.update_data(note=note)
     await state.set_state(PointCorrectionStates.waiting_photo)
@@ -230,7 +256,7 @@ async def pt_corr_photo(message: Message, state: FSMContext):
     m = mv_repo.get_move(move_id)
     if not m:
         await state.clear()
-        return await message.answer("❌ Переміщення не знайдено.")
+        return await message.answer("❌ Переміщення не знайдено.", parse_mode=PM)
 
     op_id = m.get("operator_id") or m.get("created_by")
 
