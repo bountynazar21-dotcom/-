@@ -1,4 +1,6 @@
 # app/handlers/moves_admin.py
+import logging
+
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto
 from aiogram.exceptions import TelegramBadRequest
@@ -20,6 +22,7 @@ from ..utils.text import move_text
 router = Router()
 PM = "HTML"
 MAX_PHOTOS = 10
+log = logging.getLogger(__name__)
 
 
 # ---------- FSM (тільки для збору фото) ----------
@@ -96,6 +99,14 @@ async def _send_album_or_single_to_me(cb: CallbackQuery, photos: list[str], capt
             except Exception:
                 pass
         await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Альбом не відправився, відправив як вийшло.", parse_mode=PM)
+
+
+async def _send_pdf_to_me(cb: CallbackQuery, pdf_file_id: str, caption: str) -> None:
+    try:
+        await cb.bot.send_document(cb.from_user.id, document=pdf_file_id, caption=caption, parse_mode=PM)
+    except Exception:
+        log.exception("Failed to send pdf to admin")
+        await cb.bot.send_message(cb.from_user.id, caption + "\n\n⚠️ Не зміг надіслати PDF.", parse_mode=PM)
 
 
 async def _send_album_or_single_to_tt(bot, uid: int, photos: list[str], caption: str, kb):
@@ -184,7 +195,12 @@ async def mva_docs(cb: CallbackQuery):
         await cb.answer("Не знайдено.", show_alert=True)
         return
 
-    # 1) всі версії
+    # ✅ 0) якщо є PDF — покажемо ОКРЕМО (PDF не версіонуємо)
+    pdf_id = m.get("invoice_pdf_file_id")
+    if pdf_id:
+        await _send_pdf_to_me(cb, pdf_id, f"📄 <b>PDF накладної</b>\n🆔 ID: <b>{move_id}</b>")
+
+    # 1) всі версії фото
     try:
         invoices = mv_repo.list_invoices(move_id)
     except Exception:
@@ -199,7 +215,6 @@ async def mva_docs(cb: CallbackQuery):
     for inv in invoices:
         v = int(inv.get("version") or 1)
 
-        photos: list[str] = []
         try:
             photos = mv_repo.list_invoice_photos(move_id, v)
         except Exception:
@@ -210,14 +225,18 @@ async def mva_docs(cb: CallbackQuery):
             if fid:
                 photos = [fid]
 
-        cap = f"📄 <b>Накладна V{v}</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
+        cap = f"📷 <b>Накладна V{v}</b>\n🆔 ID: <b>{move_id}</b>\n\n" + move_text(m)
         await _send_album_or_single_to_me(cb, photos, cap)
         sent_any = True
 
-    if not sent_any:
-        await cb.bot.send_message(cb.from_user.id, f"🆔 ID: <b>{move_id}</b>\n\n" + move_text(m) + "\n\n⚠️ Накладних не знайдено.", parse_mode=PM)
+    if not sent_any and not pdf_id:
+        await cb.bot.send_message(
+            cb.from_user.id,
+            f"🆔 ID: <b>{move_id}</b>\n\n" + move_text(m) + "\n\n⚠️ Накладних не знайдено (ні фото, ні PDF).",
+            parse_mode=PM,
+        )
 
-    await cb.answer("📄 Накладні відправив у чат", show_alert=True)
+    await cb.answer("📄 Документи відправив у чат", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("mva:close_"))
@@ -262,7 +281,6 @@ async def mva_close(cb: CallbackQuery):
 # ✅ REINVOICE FLOW: оператор збирає фото (FSM) -> V+1 -> альбом на ТТ
 # -------------------------------------------------------------------
 
-# ❗ ВАЖЛИВО: ловимо ТІЛЬКИ mva:reinvoice_<digits>, щоб не конфліктувало з done/cancel
 @router.callback_query(F.data.regexp(r"^mva:reinvoice_\d+$"))
 async def mva_reinvoice_start(cb: CallbackQuery, state: FSMContext):
     move_id = int(cb.data.split("_")[-1])
@@ -312,15 +330,16 @@ async def mva_reinvoice_collect(message: Message, state: FSMContext):
     photos: list[str] = data.get("photos", [])
     media_groups_seen: list[str] = data.get("media_groups_seen", [])
 
-    if len(photos) >= MAX_PHOTOS:
+    if file_id not in photos:
+        photos.append(file_id)
+
+    if len(photos) > MAX_PHOTOS:
+        photos = photos[:MAX_PHOTOS]
+        await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
         return await message.answer(f"⚠️ Ліміт {MAX_PHOTOS} фото. Натисни ✅ <b>Готово</b>.", parse_mode=PM)
 
-    photos.append(file_id)
-
-    # альбом: відповідаємо 1 раз на media_group_id
     if message.media_group_id:
         mg = str(message.media_group_id)
-
         if mg not in media_groups_seen:
             media_groups_seen.append(mg)
             await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
@@ -334,7 +353,10 @@ async def mva_reinvoice_collect(message: Message, state: FSMContext):
         return
 
     await state.update_data(photos=photos, media_groups_seen=media_groups_seen)
-    await message.answer(f"✅ Додано фото: <b>{len(photos)}</b>\nНатисни ✅ <b>Готово</b> коли завершиш.", parse_mode=PM)
+    await message.answer(
+        f"✅ Додано фото: <b>{len(photos)}</b>\nМожеш додати ще або натисни ✅ <b>Готово</b>.",
+        parse_mode=PM,
+    )
 
 
 @router.callback_query(F.data.startswith("mva:reinvoice_done_"))
@@ -351,20 +373,17 @@ async def mva_reinvoice_done(cb: CallbackQuery, state: FSMContext):
         await state.clear()
         return await cb.answer("Не знайдено.", show_alert=True)
 
-    # 1) V+1
     mv_repo.bump_invoice_version(move_id)
     v = mv_repo.get_invoice_version(move_id)
 
-    # 2) зберігаємо multi-photo для цієї версії + прев'ю в moves.photo_file_id
     mv_repo.add_invoice_photos(move_id, v, photos)
     mv_repo.set_photo(move_id, photos[0])
 
-    # 3) ❗ скидаємо підтвердження, щоб ТТ могли натиснути знов
+    # ✅ PDF не чіпаємо — він незалежний
     mv_repo.reset_for_reinvoice(move_id)
 
     m2 = mv_repo.get_move(move_id) or m
 
-    # 4) відправляємо на ТТ
     from_pid = m2.get("from_point_id")
     to_pid = m2.get("to_point_id")
     if not from_pid or not to_pid:
@@ -393,7 +412,6 @@ async def mva_reinvoice_done(cb: CallbackQuery, state: FSMContext):
 
     await state.clear()
 
-    # 5) оператору — репорт
     try:
         await cb.bot.send_message(
             cb.from_user.id,
@@ -407,7 +425,6 @@ async def mva_reinvoice_done(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
-    # 6) повертаємось у картку переміщення
     back_cb = "mva:active" if (m2.get("status") not in ("done", "canceled")) else "mva:closed"
     await safe_edit(
         cb,
@@ -415,4 +432,3 @@ async def mva_reinvoice_done(cb: CallbackQuery, state: FSMContext):
         reply_markup=admin_move_actions_kb(move_id, back_cb=back_cb),
     )
     await cb.answer("✅ Надіслано нову накладну", show_alert=True)
-

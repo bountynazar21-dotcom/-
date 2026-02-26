@@ -31,14 +31,48 @@ def set_to_point(move_id: int, point_id: int) -> None:
         cur.execute("UPDATE moves SET to_point_id=%s, updated_at=NOW() WHERE id=%s", (point_id, move_id))
 
 
-def set_photo(move_id: int, file_id: str) -> None:
+def set_photo(move_id: int, file_id: Optional[str]) -> None:
+    """
+    photo_file_id = превʼю (перше фото). Для PDF можна ставити None.
+    """
     ensure_schema()
     with get_cur() as cur:
         cur.execute("UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s", (file_id, move_id))
 
+    # якщо file_id None — не пишемо в історію (бо історія в тебе photo-centric)
+    if not file_id:
+        return
+
     # записати в історію як поточну версію (V1 якщо ще не було)
     v = get_invoice_version(move_id)
     add_invoice_version(move_id, v, file_id)
+
+
+# ---------- ✅ PDF INVOICE (independent) ----------
+def set_invoice_pdf(move_id: int, file_id: Optional[str]) -> None:
+    """
+    invoice_pdf_file_id = file_id PDF накладної (незалежно від фото).
+    Якщо None — прибираємо PDF.
+    """
+    ensure_schema()
+    with get_cur() as cur:
+        cur.execute(
+            "UPDATE moves SET invoice_pdf_file_id=%s, updated_at=NOW() WHERE id=%s",
+            (file_id, move_id),
+        )
+
+
+def clear_invoice_pdf(move_id: int) -> None:
+    set_invoice_pdf(move_id, None)
+
+
+def get_invoice_pdf(move_id: int) -> Optional[str]:
+    ensure_schema()
+    with get_cur() as cur:
+        cur.execute("SELECT invoice_pdf_file_id FROM moves WHERE id=%s", (move_id,))
+        row = cur.fetchone()
+        return row.get("invoice_pdf_file_id") if row else None
+# -----------------------------------------------
 
 
 def set_note(move_id: int, note: str) -> None:
@@ -55,13 +89,24 @@ def set_status(move_id: int, status: str) -> bool:
 
 
 def get_move(move_id: int) -> Optional[Dict]:
+    """
+    Повертає move + назви точок + ✅ invoice_photos_count для поточної версії invoice_version
+    (щоб move_text() міг показати кількість фото накладної).
+    """
     ensure_schema()
     with get_cur() as cur:
         cur.execute(
             """
-            SELECT m.*,
-                   fp.name AS from_point_name,
-                   tp.name AS to_point_name
+            SELECT
+                m.*,
+                fp.name AS from_point_name,
+                tp.name AS to_point_name,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM move_invoice_photos mip
+                    WHERE mip.move_id = m.id
+                      AND mip.version = m.invoice_version
+                ), 0) AS invoice_photos_count
             FROM moves m
             LEFT JOIN points fp ON fp.id = m.from_point_id
             LEFT JOIN points tp ON tp.id = m.to_point_id
@@ -133,22 +178,46 @@ def list_moves_closed(limit: int = 30) -> List[Dict]:
 
 
 # --------- TT ACTIONS ---------
-def mark_handed(move_id: int, user_id: int) -> None:
+def mark_handed(move_id: int, user_id: int) -> bool:
+    """
+    True  -> підтверджено вперше
+    False -> вже було підтверджено раніше
+    """
     ensure_schema()
     with get_cur() as cur:
         cur.execute(
-            "UPDATE moves SET handed_at=NOW(), handed_by=%s, updated_at=NOW() WHERE id=%s",
+            """
+            UPDATE moves
+            SET handed_at=NOW(),
+                handed_by=%s,
+                updated_at=NOW()
+            WHERE id=%s
+              AND handed_at IS NULL
+            """,
             (user_id, move_id),
         )
+        return (cur.rowcount or 0) > 0
 
 
-def mark_received(move_id: int, user_id: int) -> None:
+def mark_received(move_id: int, user_id: int) -> bool:
+    """
+    True  -> підтверджено вперше
+    False -> вже було підтверджено раніше
+    """
     ensure_schema()
     with get_cur() as cur:
         cur.execute(
-            "UPDATE moves SET received_at=NOW(), received_by=%s, updated_at=NOW() WHERE id=%s",
+            """
+            UPDATE moves
+            SET received_at=NOW(),
+                received_by=%s,
+                updated_at=NOW()
+            WHERE id=%s
+              AND received_at IS NULL
+            """,
             (user_id, move_id),
         )
+        return (cur.rowcount or 0) > 0
 
 
 def clear_hand_receive(move_id: int) -> None:
@@ -266,7 +335,7 @@ def get_invoice_version(move_id: int) -> int:
         return int(row["invoice_version"]) if row and row.get("invoice_version") else 1
 
 
-# ✅ НОВЕ: multi-photo for a version
+# ✅ multi-photo for a version
 def add_invoice_photos(move_id: int, version: int, photos: list[str]) -> None:
     """
     Зберігає всі фото для (move_id, version).

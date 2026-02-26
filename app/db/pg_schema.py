@@ -54,7 +54,12 @@ def ensure_schema():
             from_point_id INT REFERENCES points(id),
             to_point_id INT REFERENCES points(id),
 
+            -- legacy/single photo (може лишитися для сумісності)
             photo_file_id TEXT,
+
+            -- ✅ НОВЕ: PDF накладної (незалежно від фото)
+            invoice_pdf_file_id TEXT,
+
             note TEXT,
             invoice_version INT DEFAULT 1,
 
@@ -71,6 +76,9 @@ def ensure_schema():
         );
         """)
 
+        # ✅ МІГРАЦІЇ (для існуючих баз): додаємо колонку, якщо таблиця вже була створена раніше
+        cur.execute("ALTER TABLE moves ADD COLUMN IF NOT EXISTS invoice_pdf_file_id TEXT;")
+
         # ---- indexes ----
         cur.execute("CREATE INDEX IF NOT EXISTS idx_points_city_id ON points(city_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_point_users_point_id ON point_users(point_id);")
@@ -79,7 +87,7 @@ def ensure_schema():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_from_point ON moves(from_point_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_to_point ON moves(to_point_id);")
 
-        # move_invoices (історія версій накладних)
+        # move_invoices (історія версій накладних) - лишаємо як є
         cur.execute("""
         CREATE TABLE IF NOT EXISTS move_invoices (
             id SERIAL PRIMARY KEY,
@@ -92,7 +100,7 @@ def ensure_schema():
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_move_invoices_move_id ON move_invoices(move_id);")
 
-        # ✅ НОВЕ: всі фото всередині однієї версії (multi-photo)
+        # multi-photo
         cur.execute("""
         CREATE TABLE IF NOT EXISTS move_invoice_photos (
             id SERIAL PRIMARY KEY,

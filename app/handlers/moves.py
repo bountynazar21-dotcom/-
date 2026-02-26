@@ -1,4 +1,6 @@
 # app/handlers/moves.py
+import logging
+
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto
 from aiogram.filters import Command
@@ -19,10 +21,12 @@ from ..keyboards.moves import (
     point_from_kb,
     point_to_kb,
     mv_photos_done_kb,
+    mv_pdf_done_kb,   # ✅ тепер існує
 )
 from ..utils.text import move_text
 
 router = Router()
+log = logging.getLogger(__name__)
 
 STATUS_UA = {
     "draft": "чернетка",
@@ -67,34 +71,94 @@ def _extract_photo_file_id(message: Message) -> str | None:
     return None
 
 
-async def _send_album_or_single(bot, uid: int, photos: list[str], caption: str, kb):
+def _extract_pdf_file_id(message: Message) -> str | None:
+    if not message.document:
+        return None
+    mt = message.document.mime_type or ""
+    fn = (message.document.file_name or "").lower()
+    if mt == "application/pdf" or fn.endswith(".pdf"):
+        return message.document.file_id
+    return None
+
+
+async def _send_invoice_package(bot, uid: int, photos: list[str], pdf_file_id: str | None, caption: str, kb):
     """
-    media_group не підтримує reply_markup, тому:
-    - 1 фото: send_photo з kb
-    - 2+: send_media_group + окреме повідомлення з kb (1 раз)
+    Відправляє вкладення (фото альбомом і/або pdf) + 1 повідомлення з кнопками.
     """
-    if not photos:
+    try:
+        sent_any = False
+
+        if photos:
+            if len(photos) == 1:
+                await bot.send_photo(uid, photo=photos[0], caption=caption, parse_mode=PM)
+            else:
+                media = [InputMediaPhoto(media=fid) for fid in photos]
+                media[0].caption = caption
+                media[0].parse_mode = PM
+                await bot.send_media_group(uid, media=media)
+            sent_any = True
+
+        if pdf_file_id:
+            if not photos:
+                await bot.send_document(uid, document=pdf_file_id, caption=caption, parse_mode=PM)
+            else:
+                await bot.send_document(uid, document=pdf_file_id, caption="📄 PDF накладної", parse_mode=PM)
+            sent_any = True
+
+        if not sent_any:
+            return False
+
+        await bot.send_message(uid, "✅ Підтверди дію кнопками нижче:", reply_markup=kb, parse_mode=PM)
+        return True
+
+    except Exception:
+        log.exception("Failed to send invoice package to uid=%s", uid)
         return False
 
+
+async def _send_invoice_to_operator(message: Message, move_id: int, m: dict):
+    """
+    Для звітності/перегляду: текст + вкладення (фото і/або pdf).
+    """
+    text = move_text(m)
+    for chunk in split_text(text):
+        await message.answer(chunk, parse_mode=PM)
+
+    v = int(m.get("invoice_version") or 1)
     try:
-        if len(photos) == 1:
-            await bot.send_photo(uid, photo=photos[0], caption=caption, reply_markup=kb, parse_mode=PM)
-        else:
-            media = [InputMediaPhoto(media=fid) for fid in photos]
-            media[0].caption = caption
-            media[0].parse_mode = PM
-            await bot.send_media_group(uid, media=media)
-            await bot.send_message(uid, "✅ Підтверди дію кнопками нижче:", reply_markup=kb, parse_mode=PM)
-        return True
+        photos = mv_repo.list_invoice_photos(move_id, v)
     except Exception:
-        return False
+        photos = []
+
+    if not photos and m.get("photo_file_id"):
+        photos = [m["photo_file_id"]]
+
+    if photos:
+        try:
+            if len(photos) == 1:
+                await message.answer_photo(photos[0], caption=f"📷 Накладна (V{v})", parse_mode=PM)
+            else:
+                media = [InputMediaPhoto(media=fid) for fid in photos]
+                media[0].caption = f"📷 Накладна (V{v})"
+                media[0].parse_mode = PM
+                await message.bot.send_media_group(message.chat.id, media=media)
+        except Exception:
+            log.exception("Failed to show invoice photos in /info for move_id=%s", move_id)
+
+    pdf_id = m.get("invoice_pdf_file_id")
+    if pdf_id:
+        try:
+            await message.answer_document(pdf_id, caption="📄 PDF накладної", parse_mode=PM)
+        except Exception:
+            log.exception("Failed to show invoice pdf in /info for move_id=%s", move_id)
 
 
 @router.callback_query(F.data == "mv:menu")
 async def mv_menu(cb: CallbackQuery, state: FSMContext):
-    # щоб режим фото не зависав
-    if await state.get_state() == MoveStates.waiting_photos:
+    st = await state.get_state()
+    if st in {MoveStates.waiting_photos, MoveStates.waiting_pdf}:
         await state.clear()
+
     await safe_edit(cb.message, "📦 Меню переміщень:", reply_markup=moves_menu_kb())
     await cb.answer()
 
@@ -132,7 +196,7 @@ async def mv_new(cb: CallbackQuery, state: FSMContext):
     try:
         mv_repo.set_operator(move_id, cb.from_user.id)
     except Exception:
-        pass
+        log.exception("set_operator failed for move_id=%s", move_id)
 
     await state.update_data(move_id=move_id)
 
@@ -256,13 +320,6 @@ async def mv_photo_cancel(cb: CallbackQuery, state: FSMContext):
 
 @router.message(MoveStates.waiting_photos)
 async def mv_photo_collect(message: Message, state: FSMContext):
-    """
-    Головний фікс: НЕ тримаємо список фото лише в state (бо альбоми можуть “змагатись” по апдейтах).
-    Джерело правди = БД:
-    - беремо поточний список фото з БД для цієї версії
-    - додаємо нове
-    - перезаписуємо (move_invoice_photos) одним махом
-    """
     file_id = _extract_photo_file_id(message)
     if not file_id:
         return await message.answer("⚠️ Надішли саме фото/картинку. Потім натисни ✅ Готово.", parse_mode=PM)
@@ -275,7 +332,6 @@ async def mv_photo_collect(message: Message, state: FSMContext):
 
     v = mv_repo.get_invoice_version(move_id)
 
-    # беремо вже збережені фото (щоб альбом/окремі не губились)
     try:
         current = mv_repo.list_invoice_photos(move_id, v)
     except Exception:
@@ -284,22 +340,19 @@ async def mv_photo_collect(message: Message, state: FSMContext):
     if file_id not in current:
         current.append(file_id)
 
-    # обмеження 10 фото
     if len(current) > 10:
         return await message.answer("⚠️ Максимум 10 фото для 1 накладної.", parse_mode=PM)
 
-    # пишемо в БД одразу
     try:
-        mv_repo.set_photo(move_id, current[0])          # превʼю
-        mv_repo.add_invoice_photos(move_id, v, current) # всі фото
+        mv_repo.set_photo(move_id, current[0])
+        mv_repo.add_invoice_photos(move_id, v, current)
     except Exception:
-        pass
+        log.exception("Failed to save invoice photos for move_id=%s v=%s", move_id, v)
 
     media_groups_seen: list[str] = data.get("media_groups_seen", [])
 
     if message.media_group_id:
         mg = str(message.media_group_id)
-        # відповідаємо 1 раз на весь альбом
         if mg not in media_groups_seen:
             media_groups_seen.append(mg)
             await state.update_data(media_groups_seen=media_groups_seen)
@@ -337,12 +390,132 @@ async def mv_photo_done(cb: CallbackQuery, state: FSMContext):
     m = mv_repo.get_move(move_id)
 
     await cb.message.answer(
-        f"✅ Накладну збережено: <b>{len(photos)}</b> фото (V{v})\n\n" + move_text(m),
+        f"✅ Фото накладної збережено: <b>{len(photos)}</b> фото (V{v})\n\n" + move_text(m),
         reply_markup=move_review_kb(move_id),
         parse_mode=PM,
     )
     await cb.answer("Готово ✅", show_alert=True)
 
+
+# ---------- add PDF (independent) ----------
+@router.callback_query(F.data.startswith("mv:pdf_"))
+async def mv_pdf_start(cb: CallbackQuery, state: FSMContext):
+    move_id = int(cb.data.split("_")[-1])
+
+    await state.update_data(move_id=move_id, pdf_file_id=None)
+    await state.set_state(MoveStates.waiting_pdf)
+
+    text = (
+        f"📄 <b>PDF накладної для #{move_id}</b>\n\n"
+        "Надішли PDF файлом. Я його прийму, а потім натисни ✅ <b>Зберегти PDF</b>.\n"
+        "Або натисни 🗑 <b>Прибрати PDF</b>, якщо треба очистити.\n"
+        "Скасувати — ❌."
+    )
+
+    await safe_edit(cb.message, text, reply_markup=mv_pdf_done_kb(move_id))
+    await cb.answer()
+
+
+@router.message(MoveStates.waiting_pdf)
+async def mv_pdf_collect(message: Message, state: FSMContext):
+    pdf_id = _extract_pdf_file_id(message)
+    if not pdf_id:
+        return await message.answer("⚠️ Надішли саме PDF файлом (.pdf).", parse_mode=PM)
+
+    await state.update_data(pdf_file_id=pdf_id)
+    await message.answer("✅ PDF отримано. Натисни <b>Зберегти PDF</b>.", parse_mode=PM)
+
+
+@router.callback_query(F.data.startswith("mv:pdf_done_"))
+async def mv_pdf_done(cb: CallbackQuery, state: FSMContext):
+    move_id = int(cb.data.split("_")[-1])
+    data = await state.get_data()
+    pdf_id = data.get("pdf_file_id")
+
+    if not pdf_id:
+        await cb.answer("Спочатку надішли PDF файлом.", show_alert=True)
+        return
+
+    try:
+        mv_repo.set_invoice_pdf(move_id, pdf_id)
+    except Exception:
+        log.exception("Failed to save invoice pdf for move_id=%s", move_id)
+        await cb.answer("❌ Не вдалося зберегти PDF. Дивись логи.", show_alert=True)
+        return
+
+    await state.clear()
+    m = mv_repo.get_move(move_id)
+
+    await cb.message.answer("✅ PDF накладної збережено.\n\n" + move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
+    await cb.answer("Збережено ✅", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("mv:pdf_clear_"))
+async def mv_pdf_clear(cb: CallbackQuery, state: FSMContext):
+    move_id = int(cb.data.split("_")[-1])
+
+    try:
+        mv_repo.set_invoice_pdf(move_id, None)
+    except Exception:
+        log.exception("Failed to clear invoice pdf for move_id=%s", move_id)
+        await cb.answer("❌ Не вдалося прибрати PDF. Дивись логи.", show_alert=True)
+        return
+
+    await state.clear()
+    m = mv_repo.get_move(move_id)
+
+    await cb.message.answer("🗑 PDF прибрано.\n\n" + move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
+    await cb.answer("Прибрано ✅", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("mv:pdf_cancel_"))
+async def mv_pdf_cancel(cb: CallbackQuery, state: FSMContext):
+    move_id = int(cb.data.split("_")[-1])
+    await state.clear()
+
+    m = mv_repo.get_move(move_id)
+    await cb.message.answer("❌ Ок, додавання PDF скасовано.", parse_mode=PM)
+    if m:
+        await cb.message.answer(move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("mv:note_"))
+async def mv_note_start(cb: CallbackQuery, state: FSMContext):
+    move_id = int(cb.data.split("_")[-1])
+    await state.update_data(move_id=move_id)
+    await state.set_state(MoveStates.waiting_note)
+
+    await cb.message.answer(
+        f"📝 <b>Коментар для переміщення #{move_id}</b>\n\n"
+        "Напиши текстом коментар.\n"
+        "Щоб прибрати коментар — надішли <code>-</code>.",
+        parse_mode=PM,
+    )
+    await cb.answer()
+
+
+@router.message(MoveStates.waiting_note)
+async def mv_note_collect(message: Message, state: FSMContext):
+    data = await state.get_data()
+    move_id = int(data.get("move_id") or 0)
+    if not move_id:
+        await state.clear()
+        return await message.answer("⚠️ Не знайшов move_id. Натисни ще раз 📝 Коментар.", parse_mode=PM)
+
+    text = (message.text or "").strip()
+    if not text:
+        return await message.answer("Напиши текстом або <code>-</code> щоб прибрати.", parse_mode=PM)
+
+    if text == "-":
+        mv_repo.set_note(move_id, "")
+        await state.clear()
+        m = mv_repo.get_move(move_id)
+        return await message.answer("🗑 Коментар прибрано.\n\n" + move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
+
+    mv_repo.set_note(move_id, text)
+    await state.clear()
+    m = mv_repo.get_move(move_id)
+    await message.answer("✅ Коментар збережено.\n\n" + move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
 
 # ---------- send / cancel / done ----------
 @router.callback_query(F.data.startswith("mv:send_"))
@@ -357,12 +530,10 @@ async def mv_send(cb: CallbackQuery):
         await cb.answer("Немає маршруту (from/to).", show_alert=True)
         return
 
-    # 🔥 критично: перед кожною відправкою НОВОЇ накладної
-    # обнуляємо підтвердження, щоб не було “вже підтверджено”
     try:
         mv_repo.clear_hand_receive(move_id)
     except Exception:
-        pass
+        log.exception("clear_hand_receive failed for move_id=%s", move_id)
 
     from_users = auth_repo.get_point_users(int(m["from_point_id"]))
     to_users = auth_repo.get_point_users(int(m["to_point_id"]))
@@ -378,7 +549,6 @@ async def mv_send(cb: CallbackQuery):
         )
         return
 
-    # беремо фото поточної версії
     v = int((m.get("invoice_version") or 1))
     try:
         photos = mv_repo.list_invoice_photos(move_id, v)
@@ -388,8 +558,10 @@ async def mv_send(cb: CallbackQuery):
     if not photos and m.get("photo_file_id"):
         photos = [m["photo_file_id"]]
 
-    if not photos:
-        await cb.answer("⚠️ Нема фото накладної. Додай фото перед відправкою.", show_alert=True)
+    pdf_id = m.get("invoice_pdf_file_id")
+
+    if not photos and not pdf_id:
+        await cb.answer("⚠️ Нема ні фото, ні PDF накладної. Додай перед відправкою.", show_alert=True)
         return
 
     mv_repo.set_status(move_id, "sent")
@@ -401,11 +573,11 @@ async def mv_send(cb: CallbackQuery):
     sent_to = 0
 
     for uid in from_rec:
-        if await _send_album_or_single(cb.bot, uid, photos, caption, point_from_kb(move_id)):
+        if await _send_invoice_package(cb.bot, uid, photos, pdf_id, caption, point_from_kb(move_id)):
             sent_from += 1
 
     for uid in to_rec:
-        if await _send_album_or_single(cb.bot, uid, photos, caption, point_to_kb(move_id)):
+        if await _send_invoice_package(cb.bot, uid, photos, pdf_id, caption, point_to_kb(move_id)):
             sent_to += 1
 
     operator_id = m.get("operator_id") or cb.from_user.id
@@ -419,7 +591,7 @@ async def mv_send(cb: CallbackQuery):
             parse_mode=PM,
         )
     except Exception:
-        pass
+        log.exception("Failed to notify operator after send move_id=%s", move_id)
 
     await safe_edit(
         cb.message,
@@ -481,4 +653,5 @@ async def cmd_info(message: Message):
     m = mv_repo.get_move(move_id)
     if not m:
         return await message.answer("Не знайдено.", parse_mode=PM)
-    await message.answer(move_text(m), parse_mode=PM)
+
+    await _send_invoice_to_operator(message, move_id, m)

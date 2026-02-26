@@ -20,11 +20,29 @@ def move_text(m: dict) -> str:
     received_by = m.get("received_by") or "—"
     received_at = m.get("received_at") or "—"
 
+    status = (m.get("status") or "—").lower()
+
+    # --- attachments summary ---
+    pdf_ok = bool(m.get("invoice_pdf_file_id"))
+
+    # якщо десь підкладемо invoice_photos_count — покажемо точно
+    photos_count = m.get("invoice_photos_count")
+    if isinstance(photos_count, int):
+        photos_line = f"📷 Фото накладної: <b>{photos_count}</b>"
+    else:
+        # fallback: хоча б "є/нема"
+        photos_line = "📷 Фото накладної: <b>є</b>" if m.get("photo_file_id") else "📷 Фото накладної: <b>нема</b>"
+
+    pdf_line = "📄 PDF накладної: <b>є</b>" if pdf_ok else "📄 PDF накладної: <b>нема</b>"
+
     lines = [
         f"📦 <b>Переміщення #{m['id']}</b> (V{inv_v})",
-        f"Статус: <b>{m.get('status')}</b>",
+        f"Статус: <b>{status}</b>",
         f"Звідки: <b>{from_part}</b>",
         f"Куди: <b>{to_part}</b>",
+        "",
+        photos_line,
+        pdf_line,
         "",
         f"📤 Віддав: <b>{handed_by}</b> • {handed_at}",
         f"📥 Отримав: <b>{received_by}</b> • {received_at}",
@@ -35,4 +53,3 @@ def move_text(m: dict) -> str:
 
     lines.append(f"\nСтворено: {m.get('created_at')}")
     return "\n".join(lines)
-

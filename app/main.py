@@ -6,6 +6,10 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
+from aiogram.types import BotCommand
+from aiogram.methods import SetMyCommands
+from aiogram.types import BotCommandScopeDefault, BotCommandScopeChat
+
 from .logger import setup_logging
 from .config import load_config
 from .db.pg_schema import ensure_schema
@@ -18,9 +22,39 @@ from .handlers.auth import router as auth_router
 from .handlers.point_profile import router as point_profile_router
 from .handlers.point_moves import router as point_moves_router
 from .handlers.moves_admin import router as moves_admin_router
-from .handlers.reinvoice import router as reinvoice_router
 
 from .middlewares.admin_only import AdminOnlyMiddleware
+
+
+async def _setup_bot_commands(bot: Bot, admins: set[int]) -> None:
+    """
+    Telegram menu commands:
+    - default (для всіх): тільки /start
+    - admins: повний список команд
+    """
+    # 1) Для всіх користувачів (продавці/ТТ)
+    await bot(SetMyCommands(
+        commands=[
+            BotCommand(command="start", description="Запуск / меню"),
+        ],
+        scope=BotCommandScopeDefault(),
+    ))
+
+    # 2) Для адмінів — повний список
+    admin_cmds = [
+        BotCommand(command="start", description="Запуск / меню"),
+        BotCommand(command="moves", description="Список переміщень"),
+        BotCommand(command="info", description="Інфо по переміщенню: /info ID"),
+        # якщо є ще адмінські команди — додаємо тут:
+        # BotCommand(command="addcity", description="Додати місто"),
+        # BotCommand(command="addpoint", description="Додати ТТ"),
+    ]
+
+    for admin_id in admins:
+        await bot(SetMyCommands(
+            commands=admin_cmds,
+            scope=BotCommandScopeChat(chat_id=admin_id),
+        ))
 
 
 async def main() -> None:
@@ -58,21 +92,23 @@ async def main() -> None:
     moves_admin_router.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
     moves_admin_router.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
 
-    reinvoice_router.message.middleware(AdminOnlyMiddleware(cfg.admins_set))
-    reinvoice_router.callback_query.middleware(AdminOnlyMiddleware(cfg.admins_set))
-
     dp.include_router(locations_router)
     dp.include_router(moves_router)
     dp.include_router(point_users_router)
     dp.include_router(moves_admin_router)
-    dp.include_router(reinvoice_router)
 
     me = await bot.get_me()
     log.info("Bot started as @%s", me.username)
+
+    # ✅ Commands меню: продавці бачать тільки /start, адміни — всі
+    try:
+        await _setup_bot_commands(bot, cfg.admins_set)
+        log.info("Bot commands set: default=/start, admins=full")
+    except Exception:
+        log.exception("Failed to set bot commands")
 
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-

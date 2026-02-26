@@ -25,8 +25,12 @@ def points_kb(points: list[tuple[int, str]], prefix: str, back_cb: str) -> Inlin
 
 
 def move_review_kb(move_id: int) -> InlineKeyboardMarkup:
+    # ✅ ДВІ НЕЗАЛЕЖНІ КНОПКИ: фото та PDF
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📷 Додати / змінити фото", callback_data=f"mv:photo_{move_id}")],
+        [
+            InlineKeyboardButton(text="📸 Фото накладної (альбом)", callback_data=f"mv:photo_{move_id}"),
+            InlineKeyboardButton(text="📄 PDF накладної", callback_data=f"mv:pdf_{move_id}"),
+        ],
         [InlineKeyboardButton(text="📝 Додати / змінити коментар", callback_data=f"mv:note_{move_id}")],
         [InlineKeyboardButton(text="✅ Відправити на ТТ", callback_data=f"mv:send_{move_id}")],
         [InlineKeyboardButton(text="🗑 Скасувати", callback_data=f"mv:cancel_{move_id}")],
@@ -74,24 +78,19 @@ def point_to_confirmed_kb(move_id: int) -> InlineKeyboardMarkup:
 
 # ✅ MULTI-PHOTO ДЛЯ СТВОРЕННЯ ПЕРЕМІЩЕННЯ
 def mv_photos_done_kb(move_id: int) -> InlineKeyboardMarkup:
-    # ВАЖЛИВО: callback_data -> mv:photo_done_ / mv:photo_cancel_
-    # (бо в handlers ми ловимо ці префікси, і так нема розсинхрону)
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="✅ Готово",
-                callback_data=f"mv:photo_done_{move_id}"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="❌ Скасувати",
-                callback_data=f"mv:photo_cancel_{move_id}"
-            )
-        ],
+        [InlineKeyboardButton(text="✅ Готово", callback_data=f"mv:photo_done_{move_id}")],
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data=f"mv:photo_cancel_{move_id}")],
     ])
 
 
+# ✅ PDF ДЛЯ СТВОРЕННЯ ПЕРЕМІЩЕННЯ (незалежно від фото)
+def mv_pdf_done_kb(move_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Зберегти PDF", callback_data=f"mv:pdf_done_{move_id}")],
+        [InlineKeyboardButton(text="🗑 Прибрати PDF", callback_data=f"mv:pdf_clear_{move_id}")],
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data=f"mv:pdf_cancel_{move_id}")],
+    ])
 
 
 # ---------- admin ----------

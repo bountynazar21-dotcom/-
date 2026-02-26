@@ -3,15 +3,24 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# ВАЖЛИВО:
+# Не кешуємо DATABASE_URL на імпорті, бо .env може завантажитися пізніше.
+# Читаємо змінну кожен раз всередині get_conn().
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    # Якщо dotenv не встановлений/не потрібен у проді — просто ігноруємо.
+    pass
 
 
 @contextmanager
 def get_conn():
-    if not DATABASE_URL:
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
         raise RuntimeError("DATABASE_URL is not set (Railway Postgres).")
 
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg2.connect(database_url)
     conn.autocommit = True
     try:
         yield conn
