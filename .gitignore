@@ -1,15 +1,4 @@
-# env
-.env
-
-# python
-__pycache__/
+﻿__pycache__/
 *.pyc
-*.pyo
-*.pyd
-.venv/
-venv/
-.env.*
-
-# db
-*.db
-*.sqlite
+.env
+bot.db
