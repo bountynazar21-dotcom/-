@@ -1,11 +1,16 @@
 # app/handlers/moves.py
 import logging
+import traceback
 
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+)
 
 from ..db import locations_repo as loc_repo
 from ..db import moves_repo as mv_repo
@@ -21,7 +26,7 @@ from ..keyboards.moves import (
     point_from_kb,
     point_to_kb,
     mv_photos_done_kb,
-    mv_pdf_done_kb,   # ✅ тепер існує
+    mv_pdf_done_kb,
 )
 from ..utils.text import move_text
 
@@ -84,9 +89,12 @@ def _extract_pdf_file_id(message: Message) -> str | None:
 async def _send_invoice_package(bot, uid: int, photos: list[str], pdf_file_id: str | None, caption: str, kb):
     """
     Відправляє вкладення (фото альбомом і/або pdf) + 1 повідомлення з кнопками.
+    Додаємо детальні логи, щоб зрозуміти чому "не надсилається".
     """
     try:
         sent_any = False
+
+        log.info("SEND pkg uid=%s photos=%s pdf=%s", uid, len(photos), bool(pdf_file_id))
 
         if photos:
             if len(photos) == 1:
@@ -106,13 +114,24 @@ async def _send_invoice_package(bot, uid: int, photos: list[str], pdf_file_id: s
             sent_any = True
 
         if not sent_any:
+            log.warning("SEND pkg uid=%s: nothing to send (no photos, no pdf)", uid)
             return False
 
         await bot.send_message(uid, "✅ Підтверди дію кнопками нижче:", reply_markup=kb, parse_mode=PM)
         return True
 
-    except Exception:
-        log.exception("Failed to send invoice package to uid=%s", uid)
+    except TelegramRetryAfter as e:
+        log.error("SEND FAIL uid=%s flood_wait=%s", uid, getattr(e, "retry_after", None))
+        return False
+    except TelegramForbiddenError as e:
+        log.error("SEND FAIL uid=%s forbidden: %s", uid, str(e))
+        return False
+    except TelegramBadRequest as e:
+        # тут найчастіше: wrong file_id, chat not found, can't parse entities, etc.
+        log.error("SEND FAIL uid=%s bad_request: %s", uid, str(e))
+        return False
+    except Exception as e:
+        log.error("SEND FAIL uid=%s unknown: %s\n%s", uid, str(e), traceback.format_exc())
         return False
 
 
@@ -418,6 +437,17 @@ async def mv_pdf_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(MoveStates.waiting_pdf)
 async def mv_pdf_collect(message: Message, state: FSMContext):
+    # Лог корисний: інколи прилітає не pdf, а інший mime
+    try:
+        log.info(
+            "PDF incoming: has_doc=%s mime=%s name=%s",
+            bool(message.document),
+            getattr(message.document, "mime_type", None),
+            getattr(message.document, "file_name", None),
+        )
+    except Exception:
+        pass
+
     pdf_id = _extract_pdf_file_id(message)
     if not pdf_id:
         return await message.answer("⚠️ Надішли саме PDF файлом (.pdf).", parse_mode=PM)
@@ -446,7 +476,11 @@ async def mv_pdf_done(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     m = mv_repo.get_move(move_id)
 
-    await cb.message.answer("✅ PDF накладної збережено.\n\n" + move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
+    await cb.message.answer(
+        "✅ PDF накладної збережено.\n\n" + move_text(m),
+        reply_markup=move_review_kb(move_id),
+        parse_mode=PM,
+    )
     await cb.answer("Збережено ✅", show_alert=True)
 
 
@@ -464,7 +498,11 @@ async def mv_pdf_clear(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     m = mv_repo.get_move(move_id)
 
-    await cb.message.answer("🗑 PDF прибрано.\n\n" + move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
+    await cb.message.answer(
+        "🗑 PDF прибрано.\n\n" + move_text(m),
+        reply_markup=move_review_kb(move_id),
+        parse_mode=PM,
+    )
     await cb.answer("Прибрано ✅", show_alert=True)
 
 
@@ -478,6 +516,7 @@ async def mv_pdf_cancel(cb: CallbackQuery, state: FSMContext):
     if m:
         await cb.message.answer(move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
     await cb.answer()
+
 
 @router.callback_query(F.data.startswith("mv:note_"))
 async def mv_note_start(cb: CallbackQuery, state: FSMContext):
@@ -510,12 +549,21 @@ async def mv_note_collect(message: Message, state: FSMContext):
         mv_repo.set_note(move_id, "")
         await state.clear()
         m = mv_repo.get_move(move_id)
-        return await message.answer("🗑 Коментар прибрано.\n\n" + move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
+        return await message.answer(
+            "🗑 Коментар прибрано.\n\n" + move_text(m),
+            reply_markup=move_review_kb(move_id),
+            parse_mode=PM,
+        )
 
     mv_repo.set_note(move_id, text)
     await state.clear()
     m = mv_repo.get_move(move_id)
-    await message.answer("✅ Коментар збережено.\n\n" + move_text(m), reply_markup=move_review_kb(move_id), parse_mode=PM)
+    await message.answer(
+        "✅ Коментар збережено.\n\n" + move_text(m),
+        reply_markup=move_review_kb(move_id),
+        parse_mode=PM,
+    )
+
 
 # ---------- send / cancel / done ----------
 @router.callback_query(F.data.startswith("mv:send_"))
@@ -560,6 +608,11 @@ async def mv_send(cb: CallbackQuery):
 
     pdf_id = m.get("invoice_pdf_file_id")
 
+    log.info(
+        "MOVE SEND move_id=%s from_rec=%s to_rec=%s v=%s photos=%s pdf=%s",
+        move_id, from_rec, to_rec, v, len(photos), bool(pdf_id)
+    )
+
     if not photos and not pdf_id:
         await cb.answer("⚠️ Нема ні фото, ні PDF накладної. Додай перед відправкою.", show_alert=True)
         return
@@ -573,12 +626,18 @@ async def mv_send(cb: CallbackQuery):
     sent_to = 0
 
     for uid in from_rec:
-        if await _send_invoice_package(cb.bot, uid, photos, pdf_id, caption, point_from_kb(move_id)):
+        ok = await _send_invoice_package(cb.bot, uid, photos, pdf_id, caption, point_from_kb(move_id))
+        if ok:
             sent_from += 1
+        else:
+            log.error("SEND FAIL to FROM uid=%s move_id=%s", uid, move_id)
 
     for uid in to_rec:
-        if await _send_invoice_package(cb.bot, uid, photos, pdf_id, caption, point_to_kb(move_id)):
+        ok = await _send_invoice_package(cb.bot, uid, photos, pdf_id, caption, point_to_kb(move_id))
+        if ok:
             sent_to += 1
+        else:
+            log.error("SEND FAIL to TO uid=%s move_id=%s", uid, move_id)
 
     operator_id = m.get("operator_id") or cb.from_user.id
     try:
