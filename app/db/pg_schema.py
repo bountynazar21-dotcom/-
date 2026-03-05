@@ -58,7 +58,7 @@ def ensure_schema():
             -- legacy/single photo (може лишитися для сумісності)
             photo_file_id TEXT,
 
-            -- ✅ НОВЕ: PDF накладної (незалежно від фото)
+            -- ✅ PDF накладної (незалежно від фото)
             invoice_pdf_file_id TEXT,
 
             note TEXT,
@@ -77,8 +77,7 @@ def ensure_schema():
         );
         """)
 
-        # ✅ МІГРАЦІЇ (для існуючих баз)
-        # якщо moves вже було створено раніше без invoice_pdf_file_id
+        # ✅ МІГРАЦІЯ: якщо moves вже було створено раніше без invoice_pdf_file_id
         cur.execute("ALTER TABLE moves ADD COLUMN IF NOT EXISTS invoice_pdf_file_id TEXT;")
 
         # ---- indexes ----
@@ -89,7 +88,7 @@ def ensure_schema():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_from_point ON moves(from_point_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_moves_to_point ON moves(to_point_id);")
 
-        # move_invoices (історія версій накладних) - лишаємо як є
+        # move_invoices (історія версій накладних)
         cur.execute("""
         CREATE TABLE IF NOT EXISTS move_invoices (
             id SERIAL PRIMARY KEY,
@@ -103,110 +102,64 @@ def ensure_schema():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_move_invoices_move_id ON move_invoices(move_id);")
 
         # ------------------------------------------------------------
-        # ✅ move_invoice_photos (multi-photo) + авто-виправлення старої схеми
+        # ✅ move_invoice_photos (multi-photo) + міграції зі старих схем
         # ------------------------------------------------------------
 
-        # 1) створюємо таблицю якщо її нема
+        # 1) створюємо таблицю (для нових баз)
         cur.execute("""
         CREATE TABLE IF NOT EXISTS move_invoice_photos (
             id SERIAL PRIMARY KEY,
             move_id INT NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
             version INT NOT NULL,
-            idx INT NOT NULL,
+            idx INT,
             photo_file_id TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(move_id, version, idx)
+            created_at TIMESTAMP DEFAULT NOW()
         );
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_move_invoice_photos_move_id ON move_invoice_photos(move_id);")
 
-        # 2) Якщо таблиця існувала зі старою схемою (без idx) — виправляємо
-        # Перевіряємо, чи є колонка idx:
+        # 2) якщо існувала стара колонка position — переносимо в idx
         cur.execute("""
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'move_invoice_photos' AND column_name = 'idx'
-        LIMIT 1;
+        DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='move_invoice_photos' AND column_name='position'
+          ) THEN
+            -- position у тебе був 0..N-1, робимо idx = position+1
+            EXECUTE 'UPDATE move_invoice_photos
+                     SET idx = COALESCE(idx, position + 1)
+                     WHERE idx IS NULL';
+          END IF;
+        END $$;
         """)
-        has_idx = cur.fetchone() is not None
 
-        if not has_idx:
-            # Додаємо idx (nullable), заповнюємо, робимо NOT NULL, додаємо unique constraint
-            cur.execute("ALTER TABLE move_invoice_photos ADD COLUMN IF NOT EXISTS idx INT;")
+        # 3) якщо idx все ще NULL (або його не було взагалі) — пронумеруємо по (move_id, version)
+        cur.execute("""
+        WITH ranked AS (
+          SELECT id,
+                 ROW_NUMBER() OVER (PARTITION BY move_id, version ORDER BY id) AS rn
+          FROM move_invoice_photos
+        )
+        UPDATE move_invoice_photos t
+        SET idx = r.rn
+        FROM ranked r
+        WHERE t.id = r.id AND t.idx IS NULL;
+        """)
 
-            # заповнюємо idx по порядку для існуючих рядків
-            cur.execute("""
-            WITH ranked AS (
-              SELECT id,
-                     ROW_NUMBER() OVER (PARTITION BY move_id, version ORDER BY id) AS rn
-              FROM move_invoice_photos
-            )
-            UPDATE move_invoice_photos t
-            SET idx = r.rn
-            FROM ranked r
-            WHERE t.id = r.id AND t.idx IS NULL;
-            """)
+        # 4) гарантуємо, що idx існує і NOT NULL
+        cur.execute("ALTER TABLE move_invoice_photos ADD COLUMN IF NOT EXISTS idx INT;")
+        cur.execute("ALTER TABLE move_invoice_photos ALTER COLUMN idx SET NOT NULL;")
 
-            # тепер можна зробити NOT NULL
-            cur.execute("ALTER TABLE move_invoice_photos ALTER COLUMN idx SET NOT NULL;")
-
-            # додаємо унікальний constraint (якщо його нема)
-            cur.execute("""
-            DO $$
-            BEGIN
-              IF NOT EXISTS (
-                SELECT 1 FROM pg_constraint WHERE conname = 'move_invoice_photos_unique_mv_ver_idx'
-              ) THEN
-                ALTER TABLE move_invoice_photos
-                ADD CONSTRAINT move_invoice_photos_unique_mv_ver_idx UNIQUE (move_id, version, idx);
-              END IF;
-            END $$;
-            """)
-
-        # ✅ Готово
-        # --- MIGRATION: old schema had "position" instead of "idx" ---
-# 1) add idx if missing
-cur.execute("ALTER TABLE move_invoice_photos ADD COLUMN IF NOT EXISTS idx INT;")
-
-# 2) if there is old column position -> переносимо дані
-cur.execute("""
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name='move_invoice_photos' AND column_name='position'
-  ) THEN
-    UPDATE move_invoice_photos
-    SET idx = COALESCE(idx, position + 1);
-  END IF;
-END $$;
-""")
-
-# 3) fill remaining NULL idx by row_number per (move_id, version)
-cur.execute("""
-WITH ranked AS (
-  SELECT id,
-         ROW_NUMBER() OVER (PARTITION BY move_id, version ORDER BY id) AS rn
-  FROM move_invoice_photos
-)
-UPDATE move_invoice_photos t
-SET idx = r.rn
-FROM ranked r
-WHERE t.id = r.id AND t.idx IS NULL;
-""")
-
-# 4) set NOT NULL (після заповнення)
-cur.execute("ALTER TABLE move_invoice_photos ALTER COLUMN idx SET NOT NULL;")
-
-# 5) ensure unique constraint exists
-cur.execute("""
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'move_invoice_photos_unique_mv_ver_idx'
-  ) THEN
-    ALTER TABLE move_invoice_photos
-    ADD CONSTRAINT move_invoice_photos_unique_mv_ver_idx UNIQUE (move_id, version, idx);
-  END IF;
-END $$;
-""")
+        # 5) унікальність (move_id, version, idx)
+        cur.execute("""
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'move_invoice_photos_unique_mv_ver_idx'
+          ) THEN
+            ALTER TABLE move_invoice_photos
+            ADD CONSTRAINT move_invoice_photos_unique_mv_ver_idx UNIQUE (move_id, version, idx);
+          END IF;
+        END $$;
+        """)
