@@ -334,12 +334,11 @@ def get_invoice_version(move_id: int) -> int:
         row = cur.fetchone()
         return int(row["invoice_version"]) if row and row.get("invoice_version") else 1
 
-
 # ✅ multi-photo for a version
 def add_invoice_photos(move_id: int, version: int, photos: list[str]) -> None:
     """
     Зберігає всі фото для (move_id, version).
-    Повністю перезаписує position 0..N-1 (під твою існуючу схему).
+    Повністю перезаписує idx 1..N (НОВА СХЕМА).
     """
     ensure_schema()
     with get_cur() as cur:
@@ -347,13 +346,13 @@ def add_invoice_photos(move_id: int, version: int, photos: list[str]) -> None:
             "DELETE FROM move_invoice_photos WHERE move_id=%s AND version=%s",
             (move_id, version)
         )
-        for pos, fid in enumerate(photos):
+        for i, fid in enumerate(photos, start=1):
             cur.execute(
                 """
-                INSERT INTO move_invoice_photos(move_id, version, position, photo_file_id)
+                INSERT INTO move_invoice_photos(move_id, version, idx, photo_file_id)
                 VALUES(%s, %s, %s, %s)
                 """,
-                (move_id, version, pos, fid),
+                (move_id, version, i, fid),
             )
 
 
@@ -365,7 +364,7 @@ def list_invoice_photos(move_id: int, version: int) -> list[str]:
             SELECT photo_file_id
             FROM move_invoice_photos
             WHERE move_id=%s AND version=%s
-            ORDER BY position ASC
+            ORDER BY idx ASC
             """,
             (move_id, version),
         )

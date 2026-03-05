@@ -152,14 +152,19 @@ def ensure_schema():
         cur.execute("ALTER TABLE move_invoice_photos ALTER COLUMN idx SET NOT NULL;")
 
         # 5) унікальність (move_id, version, idx)
+        # --- MIGRATION: old schema had "position" instead of "idx" ---
         cur.execute("""
         DO $$
         BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint WHERE conname = 'move_invoice_photos_unique_mv_ver_idx'
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='move_invoice_photos' AND column_name='position'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='move_invoice_photos' AND column_name='idx'
           ) THEN
-            ALTER TABLE move_invoice_photos
-            ADD CONSTRAINT move_invoice_photos_unique_mv_ver_idx UNIQUE (move_id, version, idx);
+            ALTER TABLE move_invoice_photos RENAME COLUMN position TO idx;
           END IF;
         END $$;
         """)
