@@ -164,3 +164,49 @@ def ensure_schema():
             """)
 
         # ✅ Готово
+        # --- MIGRATION: old schema had "position" instead of "idx" ---
+# 1) add idx if missing
+cur.execute("ALTER TABLE move_invoice_photos ADD COLUMN IF NOT EXISTS idx INT;")
+
+# 2) if there is old column position -> переносимо дані
+cur.execute("""
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='move_invoice_photos' AND column_name='position'
+  ) THEN
+    UPDATE move_invoice_photos
+    SET idx = COALESCE(idx, position + 1);
+  END IF;
+END $$;
+""")
+
+# 3) fill remaining NULL idx by row_number per (move_id, version)
+cur.execute("""
+WITH ranked AS (
+  SELECT id,
+         ROW_NUMBER() OVER (PARTITION BY move_id, version ORDER BY id) AS rn
+  FROM move_invoice_photos
+)
+UPDATE move_invoice_photos t
+SET idx = r.rn
+FROM ranked r
+WHERE t.id = r.id AND t.idx IS NULL;
+""")
+
+# 4) set NOT NULL (після заповнення)
+cur.execute("ALTER TABLE move_invoice_photos ALTER COLUMN idx SET NOT NULL;")
+
+# 5) ensure unique constraint exists
+cur.execute("""
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'move_invoice_photos_unique_mv_ver_idx'
+  ) THEN
+    ALTER TABLE move_invoice_photos
+    ADD CONSTRAINT move_invoice_photos_unique_mv_ver_idx UNIQUE (move_id, version, idx);
+  END IF;
+END $$;
+""")
