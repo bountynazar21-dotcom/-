@@ -1,4 +1,6 @@
+# app/db/moves_repo.py
 from typing import Optional, List, Dict
+
 from .pg_schema import ensure_schema
 from .pg import get_cur
 
@@ -16,19 +18,28 @@ def create_move(created_by: int) -> int:
 def set_operator(move_id: int, operator_id: int) -> None:
     ensure_schema()
     with get_cur() as cur:
-        cur.execute("UPDATE moves SET operator_id=%s, updated_at=NOW() WHERE id=%s", (operator_id, move_id))
+        cur.execute(
+            "UPDATE moves SET operator_id=%s, updated_at=NOW() WHERE id=%s",
+            (operator_id, move_id),
+        )
 
 
 def set_from_point(move_id: int, point_id: int) -> None:
     ensure_schema()
     with get_cur() as cur:
-        cur.execute("UPDATE moves SET from_point_id=%s, updated_at=NOW() WHERE id=%s", (point_id, move_id))
+        cur.execute(
+            "UPDATE moves SET from_point_id=%s, updated_at=NOW() WHERE id=%s",
+            (point_id, move_id),
+        )
 
 
 def set_to_point(move_id: int, point_id: int) -> None:
     ensure_schema()
     with get_cur() as cur:
-        cur.execute("UPDATE moves SET to_point_id=%s, updated_at=NOW() WHERE id=%s", (point_id, move_id))
+        cur.execute(
+            "UPDATE moves SET to_point_id=%s, updated_at=NOW() WHERE id=%s",
+            (point_id, move_id),
+        )
 
 
 def set_photo(move_id: int, file_id: Optional[str]) -> None:
@@ -37,9 +48,12 @@ def set_photo(move_id: int, file_id: Optional[str]) -> None:
     """
     ensure_schema()
     with get_cur() as cur:
-        cur.execute("UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s", (file_id, move_id))
+        cur.execute(
+            "UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s",
+            (file_id, move_id),
+        )
 
-    # якщо file_id None — не пишемо в історію (бо історія в тебе photo-centric)
+    # якщо file_id None — не пишемо в історію (бо історія photo-centric)
     if not file_id:
         return
 
@@ -78,20 +92,25 @@ def get_invoice_pdf(move_id: int) -> Optional[str]:
 def set_note(move_id: int, note: str) -> None:
     ensure_schema()
     with get_cur() as cur:
-        cur.execute("UPDATE moves SET note=%s, updated_at=NOW() WHERE id=%s", (note, move_id))
+        cur.execute(
+            "UPDATE moves SET note=%s, updated_at=NOW() WHERE id=%s",
+            (note, move_id),
+        )
 
 
 def set_status(move_id: int, status: str) -> bool:
     ensure_schema()
     with get_cur() as cur:
-        cur.execute("UPDATE moves SET status=%s, updated_at=NOW() WHERE id=%s", (status, move_id))
-        return cur.rowcount > 0
+        cur.execute(
+            "UPDATE moves SET status=%s, updated_at=NOW() WHERE id=%s",
+            (status, move_id),
+        )
+        return (cur.rowcount or 0) > 0
 
 
 def get_move(move_id: int) -> Optional[Dict]:
     """
-    Повертає move + назви точок + ✅ invoice_photos_count для поточної версії invoice_version
-    (щоб move_text() міг показати кількість фото накладної).
+    move + назви точок + invoice_photos_count для поточної invoice_version
     """
     ensure_schema()
     with get_cur() as cur:
@@ -275,7 +294,10 @@ def bump_invoice_version(move_id: int) -> None:
 def set_invoice_photo(move_id: int, file_id: str) -> None:
     ensure_schema()
     with get_cur() as cur:
-        cur.execute("UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s", (file_id, move_id))
+        cur.execute(
+            "UPDATE moves SET photo_file_id=%s, updated_at=NOW() WHERE id=%s",
+            (file_id, move_id),
+        )
 
     v = get_invoice_version(move_id)
     add_invoice_version(move_id, v, file_id)
@@ -306,7 +328,8 @@ def add_invoice_version(move_id: int, version: int, file_id: str) -> None:
             """
             INSERT INTO move_invoices(move_id, version, photo_file_id)
             VALUES(%s, %s, %s)
-            ON CONFLICT (move_id, version) DO UPDATE SET photo_file_id = EXCLUDED.photo_file_id
+            ON CONFLICT (move_id, version)
+            DO UPDATE SET photo_file_id = EXCLUDED.photo_file_id
             """,
             (move_id, version, file_id),
         )
@@ -334,17 +357,18 @@ def get_invoice_version(move_id: int) -> int:
         row = cur.fetchone()
         return int(row["invoice_version"]) if row and row.get("invoice_version") else 1
 
-# ✅ multi-photo for a version
+
+# ✅ multi-photo for a version (NEW SCHEMA idx)
 def add_invoice_photos(move_id: int, version: int, photos: list[str]) -> None:
     """
     Зберігає всі фото для (move_id, version).
-    Повністю перезаписує idx 1..N (НОВА СХЕМА).
+    Повністю перезаписує idx 1..N.
     """
     ensure_schema()
     with get_cur() as cur:
         cur.execute(
             "DELETE FROM move_invoice_photos WHERE move_id=%s AND version=%s",
-            (move_id, version)
+            (move_id, version),
         )
         for i, fid in enumerate(photos, start=1):
             cur.execute(
