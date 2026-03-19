@@ -88,36 +88,34 @@ def _extract_pdf_file_id(message: Message) -> str | None:
 
 async def _send_invoice_package(bot, uid: int, photos: list[str], pdf_file_id: str | None, caption: str, kb):
     """
-    Відправляє вкладення (фото альбомом і/або pdf) + 1 повідомлення з кнопками.
-    Додаємо детальні логи, щоб зрозуміти чому "не надсилається".
+    Відправляє вкладення (фото альбомом і/або pdf) + окреме повідомлення з повним текстом і кнопками.
+    Це важливо, бо caption у Telegram для фото/документа обмежений.
     """
     try:
         sent_any = False
+        short_caption = "📦 Накладна / Переміщення"
 
         log.info("SEND pkg uid=%s photos=%s pdf=%s", uid, len(photos), bool(pdf_file_id))
 
         if photos:
             if len(photos) == 1:
-                await bot.send_photo(uid, photo=photos[0], caption=caption, parse_mode=PM)
+                await bot.send_photo(uid, photo=photos[0], caption=short_caption, parse_mode=PM)
             else:
                 media = [InputMediaPhoto(media=fid) for fid in photos]
-                media[0].caption = caption
+                media[0].caption = short_caption
                 media[0].parse_mode = PM
                 await bot.send_media_group(uid, media=media)
             sent_any = True
 
         if pdf_file_id:
-            if not photos:
-                await bot.send_document(uid, document=pdf_file_id, caption=caption, parse_mode=PM)
-            else:
-                await bot.send_document(uid, document=pdf_file_id, caption="📄 PDF накладної", parse_mode=PM)
+            await bot.send_document(uid, document=pdf_file_id, caption="📄 PDF накладної", parse_mode=PM)
             sent_any = True
 
         if not sent_any:
             log.warning("SEND pkg uid=%s: nothing to send (no photos, no pdf)", uid)
             return False
 
-        await bot.send_message(uid, "✅ Підтверди дію кнопками нижче:", reply_markup=kb, parse_mode=PM)
+        await bot.send_message(uid, caption, reply_markup=kb, parse_mode=PM)
         return True
 
     except TelegramRetryAfter as e:
@@ -127,7 +125,6 @@ async def _send_invoice_package(bot, uid: int, photos: list[str], pdf_file_id: s
         log.error("SEND FAIL uid=%s forbidden: %s", uid, str(e))
         return False
     except TelegramBadRequest as e:
-        # тут найчастіше: wrong file_id, chat not found, can't parse entities, etc.
         log.error("SEND FAIL uid=%s bad_request: %s", uid, str(e))
         return False
     except Exception as e:
@@ -306,7 +303,7 @@ async def mv_to_point(cb: CallbackQuery, state: FSMContext):
 
 
 # ---------- add photo(s) ----------
-@router.callback_query(F.data.startswith("mv:photo_"))
+@router.callback_query(F.data.regexp(r"^mv:photo_\d+$"))
 async def mv_photo_start(cb: CallbackQuery, state: FSMContext):
     move_id = int(cb.data.split("_")[-1])
 
@@ -417,7 +414,7 @@ async def mv_photo_done(cb: CallbackQuery, state: FSMContext):
 
 
 # ---------- add PDF (independent) ----------
-@router.callback_query(F.data.startswith("mv:pdf_"))
+@router.callback_query(F.data.regexp(r"^mv:pdf_\d+$"))
 async def mv_pdf_start(cb: CallbackQuery, state: FSMContext):
     move_id = int(cb.data.split("_")[-1])
 
@@ -437,7 +434,6 @@ async def mv_pdf_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(MoveStates.waiting_pdf)
 async def mv_pdf_collect(message: Message, state: FSMContext):
-    # Лог корисний: інколи прилітає не pdf, а інший mime
     try:
         log.info(
             "PDF incoming: has_doc=%s mime=%s name=%s",
@@ -713,4 +709,4 @@ async def cmd_info(message: Message):
     if not m:
         return await message.answer("Не знайдено.", parse_mode=PM)
 
-    await _send_invoice_to_operator(message, move_id, m)
+    await _send_invoice_to_operator(message, move_id, m) 
